@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>obold — Sovereign Dead Man's Switch Daemon</title>
+  <meta name="description" content="Sovereign Emergency Continuity & Dead Man's Switch Daemon by BCN Studio.">
+  <link rel="stylesheet" href="/ui/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2'><circle cx='12' cy='12' r='10'/><path d='M12 6v6l4 2'/></svg>">
+</head>
+<body>
+  <div class="app-container">
+    
+    <header class="navbar">
+      <a href="/" class="brand">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M12 6v6l4 2"></path>
+          </svg>
+        </div>
+        <span class="brand-name">obold</span>
+        <span class="brand-badge">BETA v1.0.0</span>
+      </a>
+
+      <div class="nav-stats">
+        <div class="status-badge" id="sse-status">
+          <span class="pulsing-dot"></span> REAL-TIME CONNECTED
+        </div>
+        <a href="https://bcnstudio.tech" target="_blank" rel="noopener" class="btn btn-secondary" style="font-size:11px;padding:4px 10px;">
+          BCN STUDIO &rarr;
+        </a>
+      </div>
+    </header>
+
+    <section class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-label">Active Switches</div>
+        <div class="stat-value" id="stat-total-switches">-</div>
+        <div class="stat-meta">CONFIGURED IN ENGINE</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Armed &amp; Monitored</div>
+        <div class="stat-value" id="stat-armed-switches">-</div>
+        <div class="stat-meta">DURABLE WATCHDOG ACTIVE</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Next Deadline</div>
+        <div class="stat-value" id="stat-next-deadline">--:--:--</div>
+        <div class="stat-meta">EARLIEST COUNTDOWN</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Atomic Ledger</div>
+        <div class="stat-value">SQLITE WAL</div>
+        <div class="stat-meta">WRITE-AHEAD LOG</div>
+      </div>
+    </section>
+
+    
+    <section>
+      <div class="section-header">
+        <h2 class="section-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+          </svg>
+          Monitored Dead Man's Switches
+        </h2>
+      </div>
+      <div class="switch-grid" id="switch-grid-container">
+        
+      </div>
+    </section>
+
+    
+    <section class="tabs-container">
+      <div class="tab-nav">
+        <button class="tab-btn active" data-tab="tab-shamir">Shamir Key Splitter (k-of-n)</button>
+        <button class="tab-btn" data-tab="tab-combine">Secret Reconstructor</button>
+        <button class="tab-btn" data-tab="tab-token">1-Click Link Generator</button>
+      </div>
+
+      
+      <div class="tab-pane active" id="tab-shamir">
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px;">
+          Split a master passphrase into <strong>N shares</strong>. Any <strong>K shares</strong> can reconstruct the secret over GF(2^8).
+        </p>
+        <div class="form-group">
+          <label class="form-label">Secret to Split</label>
+          <input type="text" id="shamir-secret-input" class="form-input" placeholder="e.g. master vault passphrase">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;" class="form-group">
+          <div>
+            <label class="form-label">Total Shares (N)</label>
+            <input type="number" id="shamir-total-input" class="form-input" value="5" min="2" max="20">
+          </div>
+          <div>
+            <label class="form-label">Threshold Required (K)</label>
+            <input type="number" id="shamir-threshold-input" class="form-input" value="3" min="2" max="20">
+          </div>
+        </div>
+        <button class="btn btn-primary" id="btn-shamir-split">Generate Cryptographic Shares</button>
+        <div class="results-box" id="shamir-split-results" style="display:block;">Generated shares will appear here...</div>
+      </div>
+
+      
+      <div class="tab-pane" id="tab-combine">
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px;">
+          Paste at least <strong>K shares</strong> (one per line) to reconstruct the original secret.
+        </p>
+        <div class="form-group">
+          <label class="form-label">Paste Shares</label>
+          <textarea id="shamir-combine-input" class="form-textarea" rows="5" placeholder="obold-share-3-of-5-1-...\nobold-share-3-of-5-2-..."></textarea>
+        </div>
+        <button class="btn btn-primary" id="btn-shamir-combine">Reconstruct Original Secret</button>
+        <div class="results-box" id="shamir-combine-results" style="display:block;">Reconstructed secret will appear here...</div>
+      </div>
+
+      
+      <div class="tab-pane" id="tab-token">
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px;">
+          Generate a signed single-use URL. Opening the link burns the token in SQLite and extends the timer.
+        </p>
+        <div class="form-group">
+          <label class="form-label">Target Switch ID</label>
+          <input type="text" id="token-switch-select" class="form-input" placeholder="e.g. primary-vault">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Validity Period (Days)</label>
+          <input type="number" id="token-ttl-input" class="form-input" value="30" min="1" max="365">
+        </div>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="token-duress-checkbox">
+          <label for="token-duress-checkbox" class="form-label" style="margin-bottom:0;cursor:pointer;">Generate as Duress / Decoy Token (Silent Distress Beacon)</label>
+        </div>
+        <button class="btn btn-primary" id="btn-generate-link">Generate 1-Click Link</button>
+        <div class="results-box" id="token-results-box" style="display:block;">Generated check-in URL will appear here...</div>
+      </div>
+    </section>
+
+    
+    <section class="table-container">
+      <div class="section-header">
+        <h2 class="section-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="4 17 10 11 4 5"></polyline>
+            <line x1="12" y1="19" x2="20" y2="19"></line>
+          </svg>
+          Real-Time Audit Ledger &amp; System Events
+        </h2>
+        <button class="btn btn-secondary" onclick="fetchAuditLogs()" style="font-size:11px;padding:4px 8px;">Refresh</button>
+      </div>
+      <table class="log-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Level</th>
+            <th>Category</th>
+            <th>Switch</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody id="audit-table-body">
+          
+        </tbody>
+      </table>
+    </section>
+
+  </div>
+
+  <script src="/ui/app.js"></script>
+</body>
+</html>

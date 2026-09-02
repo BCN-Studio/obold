@@ -1,0 +1,56 @@
+BCN STUDIO SOVEREIGN NON-COMMERCIAL SOURCE-AVAILABLE LICENSE (v1.0)
+
+Copyright (c) 2026 BCN Studio (https://bcnstudio.tech)
+All rights reserved.
+
+================================================================================
+1. GRANT OF LICENSE & PERMITTED USES
+================================================================================
+Permission is hereby granted, free of charge, to any person or organization 
+obtaining a copy of this software and associated documentation files (the "Software"), 
+to use, inspect, study, run, and execute the Software subject strictly to the following 
+conditions:
+
+(a) PRIVATE & PERSONAL USE:
+    You may run, deploy, and use the Software privately, locally, or in self-hosted 
+    offline environments for personal, non-commercial, sovereign emergency failover 
+    and dead man's switch operations.
+
+(b) PLUGIN & EXTENSION DEVELOPMENT:
+    You are explicitly authorized and encouraged to author, build, publish, and 
+    distribute custom open-source plugins, scripts, and integration packages that 
+    interface with the Software.
+
+(c) UPSTREAM CONTRIBUTIONS:
+    You are permitted to submit bug fixes, improvements, and pull requests directly 
+    to the official upstream repository (https://github.com/BCN-Studio/obold).
+
+================================================================================
+2. PROHIBITIONS & RESTRICTIONS
+================================================================================
+(a) NO COMMERCIAL USE:
+    You MAY NOT sell, license, sub-license, lease, monetize, charge fees for, or offer 
+    the Software as a commercial product, SaaS (Software-as-a-Service), hosted service, 
+    managed daemon, or any revenue-generating enterprise deployment without prior 
+    explicit written authorization from BCN Studio.
+
+(b) NO PUBLIC FORKS OR REDISTRIBUTION:
+    You MAY NOT publish, distribute, or host public forks, mirrors, altered binaries, 
+    or derivative versions of the Software in public repositories, package registries, 
+    or distribution platforms without prior written authorization. Unauthorized 
+    public forks or copies will be taken down via DMCA / applicable legal mechanisms.
+
+(c) TRADEMARK & BRANDING:
+    The names "obold", "BCN Studio", and associated branding, logos, and art are 
+    trademarks of BCN Studio and may not be used in connection with any third-party 
+    product or service without written permission.
+
+================================================================================
+3. DISCLAIMER OF WARRANTY & LIMITATION OF LIABILITY
+================================================================================
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, 
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A 
+PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT 
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION 
+OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE 
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
