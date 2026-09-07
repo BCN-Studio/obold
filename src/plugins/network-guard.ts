@@ -1,4 +1,5 @@
 import { promises as dns } from 'node:dns';
+import { isIP } from 'node:net';
 
 function isIpPrivate(rawIp: string): boolean {
   let ip = rawIp.trim().toLowerCase();
@@ -109,31 +110,47 @@ export async function validateTargetUrl(
     return { valid: false, error: `Unsupported protocol "${parsed.protocol}". Only HTTP and HTTPS are permitted.` };
   }
 
-  const hostname = parsed.hostname.toLowerCase();
-  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local') || hostname.endsWith('.internal')) {
+  const rawHostname = parsed.hostname.toLowerCase();
+  const cleanHost = rawHostname.startsWith('[') && rawHostname.endsWith(']') ? rawHostname.slice(1, -1) : rawHostname;
+
+  if (cleanHost === 'localhost' || cleanHost.endsWith('.localhost') || cleanHost.endsWith('.local') || cleanHost.endsWith('.internal')) {
     if (!allowPrivate) {
-      return { valid: false, error: `Blocked localhost/local network target: "${hostname}".` };
+      return { valid: false, error: `Blocked localhost/local network target: "${rawHostname}".` };
     }
+  }
+
+  if (isIpPrivate(cleanHost)) {
+    if (!allowPrivate) {
+      return {
+        valid: false,
+        error: `Blocked private/link-local SSRF network destination: ${rawHostname} is a private IP.`,
+      };
+    }
+    return { valid: true, url: parsed, pinnedIp: cleanHost };
+  }
+
+  if (isIP(cleanHost) !== 0) {
+    return { valid: true, url: parsed, pinnedIp: cleanHost };
   }
 
   let pinnedIp: string | undefined;
   if (!allowPrivate) {
     try {
-      const records = await dns.lookup(hostname, { all: true });
+      const records = await dns.lookup(cleanHost, { all: true });
       if (!records || records.length === 0) {
-        return { valid: false, error: `DNS lookup returned no records for hostname "${hostname}".` };
+        return { valid: false, error: `DNS lookup returned no records for hostname "${cleanHost}".` };
       }
       for (const record of records) {
         if (isIpPrivate(record.address)) {
           return {
             valid: false,
-            error: `Blocked private/link-local SSRF network destination: ${hostname} resolved to ${record.address}.`,
+            error: `Blocked private/link-local SSRF network destination: ${cleanHost} resolved to ${record.address}.`,
           };
         }
       }
       pinnedIp = records[0].address;
     } catch (err: any) {
-      return { valid: false, error: `DNS lookup failed for hostname "${hostname}": ${err?.message || err}` };
+      return { valid: false, error: `DNS lookup failed for hostname "${cleanHost}": ${err?.message || err}` };
     }
   }
 
@@ -219,31 +236,47 @@ export async function validateWebSocketUrl(
     return { valid: false, error: `Unsupported protocol "${parsed.protocol}". Only ws:// and wss:// are permitted.` };
   }
 
-  const hostname = parsed.hostname.toLowerCase();
-  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local') || hostname.endsWith('.internal')) {
+  const rawHostname = parsed.hostname.toLowerCase();
+  const cleanHost = rawHostname.startsWith('[') && rawHostname.endsWith(']') ? rawHostname.slice(1, -1) : rawHostname;
+
+  if (cleanHost === 'localhost' || cleanHost.endsWith('.localhost') || cleanHost.endsWith('.local') || cleanHost.endsWith('.internal')) {
     if (!allowPrivate) {
-      return { valid: false, error: `Blocked localhost/local network target: "${hostname}".` };
+      return { valid: false, error: `Blocked localhost/local network target: "${rawHostname}".` };
     }
+  }
+
+  if (isIpPrivate(cleanHost)) {
+    if (!allowPrivate) {
+      return {
+        valid: false,
+        error: `Blocked private/link-local SSRF network destination: ${rawHostname} is a private IP.`,
+      };
+    }
+    return { valid: true, url: parsed, pinnedIp: cleanHost };
+  }
+
+  if (isIP(cleanHost) !== 0) {
+    return { valid: true, url: parsed, pinnedIp: cleanHost };
   }
 
   let pinnedIp: string | undefined;
   if (!allowPrivate) {
     try {
-      const records = await dns.lookup(hostname, { all: true });
+      const records = await dns.lookup(cleanHost, { all: true });
       if (!records || records.length === 0) {
-        return { valid: false, error: `DNS lookup returned no records for hostname "${hostname}".` };
+        return { valid: false, error: `DNS lookup returned no records for hostname "${cleanHost}".` };
       }
       for (const record of records) {
         if (isIpPrivate(record.address)) {
           return {
             valid: false,
-            error: `Blocked private/link-local SSRF network destination: ${hostname} resolved to ${record.address}.`,
+            error: `Blocked private/link-local SSRF network destination: ${cleanHost} resolved to ${record.address}.`,
           };
         }
       }
       pinnedIp = records[0].address;
     } catch (err: any) {
-      return { valid: false, error: `DNS lookup failed for hostname "${hostname}": ${err?.message || err}` };
+      return { valid: false, error: `DNS lookup failed for hostname "${cleanHost}": ${err?.message || err}` };
     }
   }
 
