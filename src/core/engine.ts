@@ -19,13 +19,21 @@ import { DeadLetterRetryQueue } from './retry-queue.ts';
 import { DAEMON_VERSION } from '../config/version.ts';
 
 export function canonicalJsonStringify(obj: any): string {
+  if (obj === undefined || typeof obj === 'function' || typeof obj === 'symbol') {
+    return 'null';
+  }
   if (obj === null || typeof obj !== 'object') {
+    if (typeof obj === 'number' && !Number.isFinite(obj)) {
+      return 'null';
+    }
     return JSON.stringify(obj);
   }
   if (Array.isArray(obj)) {
-    return '[' + obj.map((item) => canonicalJsonStringify(item)).join(',') + ']';
+    return '[' + obj.map((item) => (item === undefined || typeof item === 'function' || typeof item === 'symbol' ? 'null' : canonicalJsonStringify(item))).join(',') + ']';
   }
-  const keys = Object.keys(obj).sort();
+  const keys = Object.keys(obj)
+    .filter((k) => obj[k] !== undefined && typeof obj[k] !== 'function' && typeof obj[k] !== 'symbol')
+    .sort();
   return '{' + keys.map((key) => JSON.stringify(key) + ':' + canonicalJsonStringify(obj[key])).join(',') + '}';
 }
 
@@ -236,7 +244,9 @@ export class OboldEngine extends EventEmitter {
 
     for (const entry of entries) {
       const sw = this.config.switches.find((s) => s.id === entry.switchId);
-      const isDestructive = (sw?.stages.flatMap((st) => st.actions).find((a) => a.id === entry.actionId)?.destructive) || false;
+      const isDestructive = entry.destructive !== undefined
+        ? entry.destructive
+        : ((sw?.stages.flatMap((st) => st.actions).find((a) => a.id === entry.actionId)?.destructive) || false);
 
       if (entry.state === 'EXECUTING' || entry.state === 'DISPATCHED') {
         this.db.logAudit(
@@ -246,7 +256,7 @@ export class OboldEngine extends EventEmitter {
           { id: entry.id, actionId: entry.actionId, plugin: entry.plugin },
           entry.switchId
         );
-        if (isDestructive) {
+        if (isDestructive || entry.replaySafety === 'FORBIDDEN') {
           this.ledger.markFailed(
             entry.id,
             'Crash recovery paused: action is destructive and was in-flight (UNKNOWN state). Manual reconciliation required.',
@@ -265,11 +275,32 @@ export class OboldEngine extends EventEmitter {
         continue;
       }
 
+      const currentDigest = this.plugins.getPluginDigest(entry.plugin);
+      if (entry.pluginDigest && entry.pluginDigest !== currentDigest) {
+        this.ledger.markFailed(
+          entry.id,
+          `Crash recovery paused: plugin "${entry.plugin}" digest mismatch (contract: ${entry.pluginDigest}, current: ${currentDigest}). Manual reconciliation required.`,
+          'UNKNOWN',
+          null
+        );
+        continue;
+      }
+
+      if (entry.pluginVersion && entry.pluginVersion !== plugin.version) {
+        this.ledger.markFailed(
+          entry.id,
+          `Crash recovery paused: plugin "${entry.plugin}" version mismatch (contract: ${entry.pluginVersion}, current: ${plugin.version}). Manual reconciliation required.`,
+          'UNKNOWN',
+          null
+        );
+        continue;
+      }
+
       const payload = this.ledger.getDecryptedPayload(entry);
       this.ledger.claimEntry(entry.id);
       this.ledger.markExecuting(entry.id);
 
-      const originalDeadline = sw ? (this.db.getSwitch(sw.id)?.next_deadline_at || (entry.createdAt + sw.intervalMs)) : entry.createdAt;
+      const originalDeadline = entry.deadlineAt || (sw ? (this.db.getSwitch(sw.id)?.next_deadline_at || (entry.createdAt + sw.intervalMs)) : entry.createdAt);
 
       try {
         const result = await plugin.execute(payload, {
@@ -476,7 +507,14 @@ export class OboldEngine extends EventEmitter {
           continue;
         }
 
-        const entry = this.ledger.createEntry(sw.id, 'reminder', rem.id, rem.plugin, rem.config);
+        const entry = this.ledger.createEntry(sw.id, 'reminder', rem.id, rem.plugin, rem.config, 10, undefined, {
+          destructive: false,
+          privileged: false,
+          pluginVersion: plugin.version,
+          pluginDigest: this.plugins.getPluginDigest(rem.plugin),
+          deadlineAt: nextDeadline,
+          replaySafety: 'SAFE',
+        });
         this.ledger.claimEntry(entry.id);
         this.ledger.markExecuting(entry.id);
         this.db.setMetadata(cycleKey, 'IN_FLIGHT');
@@ -698,8 +736,19 @@ export class OboldEngine extends EventEmitter {
         deadlineAt: deadlineTimestamp,
       };
 
+      const contractMeta = {
+        destructive: contract.destructive,
+        privileged: contract.privileged,
+        pluginVersion: contract.pluginVersion,
+        pluginDigest: contract.pluginDigest,
+        configHash: contract.configHash,
+        payloadHash: contract.payloadHash,
+        deadlineAt: contract.deadlineAt,
+        replaySafety: (contract.destructive ? 'FORBIDDEN' : 'SAFE') as any,
+      };
+
       if (!plugin) {
-        const entry = this.ledger.createEntry(sw.id, stage.id, action.id, action.plugin, contract.configSnapshot, 10, contract.idempotencyKey);
+        const entry = this.ledger.createEntry(sw.id, stage.id, action.id, action.plugin, contract.configSnapshot, 10, contract.idempotencyKey, contractMeta);
         this.ledger.markBlockedMissingPlugin(entry.id, action.plugin);
         this.db.updateSwitchStatus(sw.id, 'BLOCKED');
         results.push({
@@ -712,7 +761,7 @@ export class OboldEngine extends EventEmitter {
         continue;
       }
 
-      const entry = this.ledger.createEntry(sw.id, stage.id, action.id, action.plugin, contract.configSnapshot, 10, contract.idempotencyKey);
+      const entry = this.ledger.createEntry(sw.id, stage.id, action.id, action.plugin, contract.configSnapshot, 10, contract.idempotencyKey, contractMeta);
       this.ledger.claimEntry(entry.id);
       this.ledger.markExecuting(entry.id);
 
@@ -895,7 +944,14 @@ export class OboldEngine extends EventEmitter {
             deadlineAt: nextDeadlineAt,
           };
 
-          const entry = this.ledger.createEntry(sw.id, 'duress', act.id, act.plugin, act.config, 10, idempotencyKey);
+          const entry = this.ledger.createEntry(sw.id, 'duress', act.id, act.plugin, act.config, 10, idempotencyKey, {
+            destructive: false,
+            privileged: false,
+            pluginVersion: '1.0.0',
+            pluginDigest: this.plugins.getPluginDigest(act.plugin),
+            deadlineAt: nextDeadlineAt,
+            replaySafety: 'SAFE',
+          });
           this.ledger.claimEntry(entry.id);
           this.ledger.markExecuting(entry.id);
 
@@ -1051,7 +1107,16 @@ export class OboldEngine extends EventEmitter {
             deadlineAt: result.nextDeadlineAt,
           };
 
-          const entry = this.ledger.createEntry(sw.id, 'duress', act.id, act.plugin, act.config, 10, idempotencyKey);
+          const entry = this.ledger.createEntry(sw.id, 'duress', act.id, act.plugin, act.config, 10, idempotencyKey, {
+            destructive: false,
+            privileged: false,
+            pluginVersion,
+            pluginDigest,
+            configHash,
+            payloadHash,
+            deadlineAt: result.nextDeadlineAt,
+            replaySafety: 'SAFE',
+          });
           this.ledger.claimEntry(entry.id);
           this.ledger.markExecuting(entry.id);
 

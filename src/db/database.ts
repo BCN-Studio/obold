@@ -1,7 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { dirname } from 'node:path';
 import { mkdirSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { SCHEMA_SQL } from './schema.ts';
 import type { LedgerRecord, HeartbeatToken, LogLevel, SwitchRow, AuditLogRow, HeartbeatTokenRow, ExecutionLedgerRow } from '../config/types.ts';
 import type { OboldCipher } from '../crypto/cipher.ts';
@@ -47,6 +47,30 @@ export class OboldDatabase {
     try {
       this.db.exec('ALTER TABLE execution_ledger ADD COLUMN idempotency_key TEXT DEFAULT NULL;');
     } catch {}
+    try {
+      this.db.exec('ALTER TABLE execution_ledger ADD COLUMN destructive INTEGER DEFAULT NULL;');
+    } catch {}
+    try {
+      this.db.exec('ALTER TABLE execution_ledger ADD COLUMN privileged INTEGER DEFAULT NULL;');
+    } catch {}
+    try {
+      this.db.exec('ALTER TABLE execution_ledger ADD COLUMN plugin_version TEXT DEFAULT NULL;');
+    } catch {}
+    try {
+      this.db.exec('ALTER TABLE execution_ledger ADD COLUMN plugin_digest TEXT DEFAULT NULL;');
+    } catch {}
+    try {
+      this.db.exec('ALTER TABLE execution_ledger ADD COLUMN config_hash TEXT DEFAULT NULL;');
+    } catch {}
+    try {
+      this.db.exec('ALTER TABLE execution_ledger ADD COLUMN payload_hash TEXT DEFAULT NULL;');
+    } catch {}
+    try {
+      this.db.exec('ALTER TABLE execution_ledger ADD COLUMN deadline_at INTEGER DEFAULT NULL;');
+    } catch {}
+    try {
+      this.db.exec("ALTER TABLE execution_ledger ADD COLUMN replay_safety TEXT NOT NULL DEFAULT 'UNKNOWN';");
+    } catch {}
     this.setMetadata('schema_version', '1.0.0');
   }
 
@@ -86,7 +110,7 @@ export class OboldDatabase {
     metadata?: Record<string, any>,
     switchId?: string
   ): void {
-    const id = `aud-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const id = `aud-${randomUUID()}`;
     const resolvedSwitchId = switchId || (metadata && typeof metadata === 'object' && metadata.switchId ? String(metadata.switchId) : null);
     const sanitizedMetadata = metadata ? this.redactSensitive(metadata) : null;
     const query = this.db.query(`
@@ -370,8 +394,10 @@ export class OboldDatabase {
         id, switch_id, stage_id, action_id, plugin, state, idempotency_key,
         attempt_count, max_attempts, next_retry_at, last_error,
         payload_snapshot, result_snapshot, created_at, updated_at,
-        dispatched_at, acknowledged_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        dispatched_at, acknowledged_at, destructive, privileged,
+        plugin_version, plugin_digest, config_hash, payload_hash,
+        deadline_at, replay_safety
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     `);
     query.run(
       entry.id,
@@ -390,7 +416,15 @@ export class OboldDatabase {
       entry.createdAt,
       entry.updatedAt,
       entry.dispatchedAt || null,
-      entry.acknowledgedAt || null
+      entry.acknowledgedAt || null,
+      entry.destructive !== undefined ? (entry.destructive ? 1 : 0) : null,
+      entry.privileged !== undefined ? (entry.privileged ? 1 : 0) : null,
+      entry.pluginVersion || null,
+      entry.pluginDigest || null,
+      entry.configHash || null,
+      entry.payloadHash || null,
+      entry.deadlineAt || null,
+      entry.replaySafety || 'UNKNOWN'
     );
   }
 
@@ -448,7 +482,13 @@ export class OboldDatabase {
     const now = Date.now();
     const query = this.db.query(`
       UPDATE execution_ledger
-      SET state = 'FAILED_PERMANENT', next_retry_at = NULL, last_error = ?, updated_at = ?
+      SET state = CASE
+        WHEN state IN ('EXECUTING', 'DISPATCHED', 'UNKNOWN') THEN 'ABORTED_UNKNOWN'
+        ELSE 'ABORTED'
+      END,
+      next_retry_at = NULL,
+      last_error = ?,
+      updated_at = ?
       WHERE switch_id = ? AND state IN ('PENDING', 'CLAIMED', 'EXECUTING', 'FAILED_RETRYABLE', 'UNKNOWN', 'ARMED', 'DISPATCHED');
     `);
     const result = query.run(`Execution aborted: ${reason}`, now, switchId);
@@ -564,6 +604,14 @@ export class OboldDatabase {
       updatedAt: row.updated_at,
       dispatchedAt: row.dispatched_at,
       acknowledgedAt: row.acknowledged_at,
+      destructive: row.destructive !== null && row.destructive !== undefined ? row.destructive === 1 : undefined,
+      privileged: row.privileged !== null && row.privileged !== undefined ? row.privileged === 1 : undefined,
+      pluginVersion: row.plugin_version || null,
+      pluginDigest: row.plugin_digest || null,
+      configHash: row.config_hash || null,
+      payloadHash: row.payload_hash || null,
+      deadlineAt: row.deadline_at || null,
+      replaySafety: (row.replay_safety as any) || 'UNKNOWN',
     };
   }
 }

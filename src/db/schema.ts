@@ -43,7 +43,15 @@ CREATE TABLE IF NOT EXISTS execution_ledger (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   dispatched_at INTEGER DEFAULT NULL,
-  acknowledged_at INTEGER DEFAULT NULL
+  acknowledged_at INTEGER DEFAULT NULL,
+  destructive INTEGER DEFAULT NULL,
+  privileged INTEGER DEFAULT NULL,
+  plugin_version TEXT DEFAULT NULL,
+  plugin_digest TEXT DEFAULT NULL,
+  config_hash TEXT DEFAULT NULL,
+  payload_hash TEXT DEFAULT NULL,
+  deadline_at INTEGER DEFAULT NULL,
+  replay_safety TEXT NOT NULL DEFAULT 'UNKNOWN'
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (

@@ -11,6 +11,8 @@ export type LedgerState =
   | 'ARMED'
   | 'DISPATCHED'
   | 'ACKNOWLEDGED'
+  | 'ABORTED'
+  | 'ABORTED_UNKNOWN'
   | 'FAILED';
 
 export type DeliveryErrorType = 'TRANSIENT' | 'PERMANENT' | 'UNKNOWN';
@@ -161,6 +163,14 @@ export interface LedgerRecord {
   updatedAt: number;
   dispatchedAt?: number | null;
   acknowledgedAt?: number | null;
+  destructive?: boolean;
+  privileged?: boolean;
+  pluginVersion?: string | null;
+  pluginDigest?: string | null;
+  configHash?: string | null;
+  payloadHash?: string | null;
+  deadlineAt?: number | null;
+  replaySafety?: 'SAFE' | 'IDEMPOTENT' | 'UNKNOWN' | 'FORBIDDEN';
 }
 
 export interface HeartbeatToken {
@@ -255,6 +265,14 @@ export interface ExecutionLedgerRow {
   updated_at: number;
   dispatched_at: number | null;
   acknowledged_at: number | null;
+  destructive?: number;
+  privileged?: number;
+  plugin_version?: string | null;
+  plugin_digest?: string | null;
+  config_hash?: string | null;
+  payload_hash?: string | null;
+  deadline_at?: number | null;
+  replay_safety?: string | null;
 }
 
 export type { PluginExecutionContext, IPluginExecutor, PluginRiskTier } from '../plugins/types.ts';

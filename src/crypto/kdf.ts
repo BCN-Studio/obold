@@ -1,5 +1,5 @@
 import { scryptSync, pbkdf2Sync, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, mkdirSync, openSync, closeSync, writeSync, lstatSync, constants } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, openSync, closeSync, writeSync, lstatSync, unlinkSync, constants } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -78,12 +78,21 @@ export function resolveMasterKey(customKey?: string, keyFilePath?: string): Buff
   }
 
   const generatedHex = randomBytes(32).toString('hex');
+  let fd: number | null = null;
   try {
-    const fd = openSync(targetKeyPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+    fd = openSync(targetKeyPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
     writeSync(fd, `${generatedHex}\n`, 0, 'utf-8');
-    closeSync(fd);
   } catch (err: any) {
+    if (fd !== null) {
+      try { closeSync(fd); } catch {}
+      fd = null;
+    }
+    try { unlinkSync(targetKeyPath); } catch {}
     throw new Error(`FATAL: Refusing to start because master encryption key could not be persisted to "${targetKeyPath}": ${err?.message || err}`);
+  } finally {
+    if (fd !== null) {
+      try { closeSync(fd); } catch {}
+    }
   }
 
   return Buffer.from(generatedHex, 'hex');
@@ -102,6 +111,9 @@ export function normalizeMasterKey(masterKeyInput?: string, salt: Buffer | strin
 
   const policy = validatePassphrasePolicy(trimmed);
   if (!policy.valid && policy.warning) {
+    if (process.env.OBOLD_STRICT_PASSPHRASE === '1') {
+      throw new Error(`FATAL: ${policy.warning}`);
+    }
     console.warn(`[SECURITY WARNING] ${policy.warning}`);
   }
 

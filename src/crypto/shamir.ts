@@ -84,6 +84,7 @@ export class ShamirSecretSharing {
     const seenX = new Set<number>();
     let expectedThreshold = 0;
     let commonSetId: string | null = null;
+    let commonTotalN: number | null = null;
 
     for (const shareStr of shares) {
       const trimmed = shareStr.trim();
@@ -122,17 +123,39 @@ export class ShamirSecretSharing {
         } else if (commonSetId !== setId) {
           throw new Error(`Mismatched share sets: share ${xVal} belongs to set ${setId} but expected ${commonSetId}.`);
         }
+
+        if (commonTotalN === null) {
+          commonTotalN = totalN;
+        } else if (commonTotalN !== totalN) {
+          throw new Error(`Mismatched total shares count: share ${xVal} reports ${totalN} total shares but expected ${commonTotalN}.`);
+        }
       } else {
         t = parseInt(legacyMatch![1], 10);
+        totalN = parseInt(legacyMatch![2], 10);
         xVal = parseInt(legacyMatch![3], 10);
         hexData = legacyMatch![4];
+
+        if (commonTotalN === null) {
+          commonTotalN = totalN;
+        } else if (commonTotalN !== totalN) {
+          throw new Error(`Mismatched total shares count: share ${xVal} reports ${totalN} total shares but expected ${commonTotalN}.`);
+        }
+      }
+
+      if (xVal < 1 || xVal > 255) {
+        throw new Error(`Invalid share x-coordinate ${xVal}: must be between 1 and 255.`);
+      }
+
+      if (expectedThreshold === 0) {
+        expectedThreshold = t;
+      } else if (expectedThreshold !== t) {
+        throw new Error(`Mismatched share thresholds: share ${xVal} reports threshold ${t} but expected ${expectedThreshold}.`);
       }
 
       if (seenX.has(xVal)) {
         continue;
       }
       seenX.add(xVal);
-      expectedThreshold = t;
 
       const yVals = Array.from(Buffer.from(hexData, 'hex'));
       parsedShares.push({ x: xVal, y: yVals, setId });
@@ -146,6 +169,12 @@ export class ShamirSecretSharing {
 
     const subset = parsedShares.slice(0, expectedThreshold);
     const secretLength = subset[0].y.length;
+
+    for (const share of subset) {
+      if (share.y.length !== secretLength) {
+        throw new Error(`Inconsistent share payload length: share ${share.x} has length ${share.y.length} bytes, expected ${secretLength}.`);
+      }
+    }
     const reconstructedBytes = Buffer.alloc(secretLength);
 
     for (let byteIndex = 0; byteIndex < secretLength; byteIndex++) {

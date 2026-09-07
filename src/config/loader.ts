@@ -164,10 +164,12 @@ export function normalizeAndValidateConfig(rawInput: any): OboldConfig {
   const serverEnabled = raw.server?.enabled !== false;
   const apiAuthToken = raw.server?.apiAuthToken ? String(raw.server.apiAuthToken).trim() : undefined;
   const corsOrigins = Array.isArray(raw.server?.corsOrigins) ? raw.server.corsOrigins : undefined;
+  const hasApiKeys = Array.isArray(raw.server?.apiKeys) && raw.server.apiKeys.length > 0;
+  const hasEnvToken = Object.keys(process.env).some((k) => k.startsWith('OBOLD_API_') && k.endsWith('_TOKEN') && (process.env[k] || '').trim().length > 0);
 
   if (serverEnabled && !isLoopback) {
-    if (!apiAuthToken || apiAuthToken === '') {
-      throw new Error(`Refusing remote host binding ("${rawHost}") without apiAuthToken. Non-loopback host binding requires mandatory authentication.`);
+    if ((!apiAuthToken || apiAuthToken === '') && !hasApiKeys && !hasEnvToken) {
+      throw new Error(`Refusing remote host binding ("${rawHost}") without apiAuthToken, apiKeys, or OBOLD_API_*_TOKEN. Non-loopback host binding requires mandatory authentication.`);
     }
     if (corsOrigins && corsOrigins.includes('*')) {
       throw new Error(`Refusing remote host binding ("${rawHost}") with wildcard CORS origin ('*'). Remote deployments must configure explicit trusted origins.`);
@@ -195,6 +197,7 @@ export function normalizeAndValidateConfig(rawInput: any): OboldConfig {
       host: rawHost,
       port: raw.server?.port || DEFAULT_CONFIG.server.port,
       apiAuthToken,
+      apiKeys: Array.isArray(raw.server?.apiKeys) ? raw.server.apiKeys : undefined,
       corsOrigins,
       trustedProxies: Array.isArray(raw.server?.trustedProxies) ? raw.server.trustedProxies : undefined,
       allowRemoteCryptoApi: raw.server?.allowRemoteCryptoApi === true,

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { schnorr } from '@noble/curves/secp256k1.js';
 import type { IPluginExecutor, PluginExecutionContext } from '../types.ts';
 import type { ExecutionResult } from '../../config/types.ts';
-import { validateWebSocketUrl } from '../network-guard.ts';
+import { createWebSocketWithSsrfGuard } from '../network-guard.ts';
 
 export class NostrPlugin implements IPluginExecutor {
   readonly id = 'core:nostr';
@@ -156,15 +156,9 @@ export class NostrPlugin implements IPluginExecutor {
     try {
       await Promise.all(
         relays.map(async (relayUrl: string) => {
-          const ssrfCheck = await validateWebSocketUrl(relayUrl, allowPrivate);
-          if (!ssrfCheck.valid) {
-            errors.push(`Relay ${relayUrl} blocked by SSRF policy: ${ssrfCheck.error}`);
-            return;
-          }
-
           return new Promise<void>((resolve) => {
             let isSettled = false;
-            let ws: WebSocket;
+            let ws: WebSocket | undefined;
 
             const timer = setTimeout(() => {
               finish(`Timeout waiting for OK from relay ${relayUrl}`);
@@ -175,54 +169,58 @@ export class NostrPlugin implements IPluginExecutor {
               isSettled = true;
               clearTimeout(timer);
               if (errMessage) errors.push(errMessage);
-              try {
-                ws.close();
-              } catch {}
+              if (ws) {
+                try {
+                  ws.close();
+                } catch {}
+              }
               resolve();
             };
 
-            try {
-              ws = new WebSocket(relayUrl);
-              activeSockets.push(ws);
+            createWebSocketWithSsrfGuard(relayUrl, allowPrivate)
+              .then(({ ws: guardedWs }) => {
+                ws = guardedWs;
+                activeSockets.push(ws);
 
-              ws.onopen = () => {
-                try {
-                  ws.send(message);
-                } catch (err: any) {
-                  finish(`Failed to send event to ${relayUrl}: ${err.message}`);
-                }
-              };
-
-              ws.onmessage = (eventMsg: MessageEvent) => {
-                try {
-                  const data = JSON.parse(eventMsg.data);
-                  if (Array.isArray(data) && data[0] === 'OK' && data[1] === eventId) {
-                    const isAccepted = data[2] === true;
-                    if (isAccepted) {
-                      successCount++;
-                      finish();
-                    } else {
-                      const reason = data[3] || 'Relay rejected event';
-                      finish(`Relay ${relayUrl} rejected event: ${reason}`);
-                    }
-                  } else if (Array.isArray(data) && data[0] === 'NOTICE') {
-                    errors.push(`Relay ${relayUrl} notice: ${data[1]}`);
+                ws.onopen = () => {
+                  try {
+                    ws?.send(message);
+                  } catch (err: any) {
+                    finish(`Failed to send event to ${relayUrl}: ${err.message}`);
                   }
-                } catch {}
-              };
+                };
 
-              ws.onerror = (err: any) => {
-                finish(`Relay ${relayUrl} connection error: ${err?.message || 'unknown error'}`);
-              };
+                ws.onmessage = (eventMsg: MessageEvent) => {
+                  try {
+                    const data = JSON.parse(eventMsg.data);
+                    if (Array.isArray(data) && data[0] === 'OK' && data[1] === eventId) {
+                      const isAccepted = data[2] === true;
+                      if (isAccepted) {
+                        successCount++;
+                        finish();
+                      } else {
+                        const reason = data[3] || 'Relay rejected event';
+                        finish(`Relay ${relayUrl} rejected event: ${reason}`);
+                      }
+                    } else if (Array.isArray(data) && data[0] === 'NOTICE') {
+                      errors.push(`Relay ${relayUrl} notice: ${data[1]}`);
+                    }
+                  } catch {}
+                };
 
-              ws.onclose = () => {
-                if (!isSettled) {
-                  finish(`Relay ${relayUrl} closed connection before acknowledging event`);
-                }
-              };
-            } catch (err: any) {
-              finish(`Relay ${relayUrl} exception: ${err.message}`);
-            }
+                ws.onerror = (err: any) => {
+                  finish(`Relay ${relayUrl} connection error: ${err?.message || 'unknown error'}`);
+                };
+
+                ws.onclose = () => {
+                  if (!isSettled) {
+                    finish(`Relay ${relayUrl} closed connection before acknowledging event`);
+                  }
+                };
+              })
+              .catch((err: any) => {
+                finish(`Relay ${relayUrl} SSRF or connection error: ${err?.message || err}`);
+              });
           });
         })
       );

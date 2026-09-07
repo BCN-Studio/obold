@@ -37,7 +37,17 @@ export class OboldServer {
     const port = this.config.server.port || 8080;
 
     const isLoopback = host === '127.0.0.1' || host === 'localhost' || host === '::1';
-    const hasValidToken = typeof this.config.server.apiAuthToken === 'string' && this.config.server.apiAuthToken.trim().length > 0;
+    const hasConfiguredKeys = Boolean(this.config.server.apiKeys && this.config.server.apiKeys.length > 0);
+    const hasEnvTokens = Boolean(
+      process.env.OBOLD_API_ADMIN_TOKEN ||
+      process.env.OBOLD_API_OPERATOR_TOKEN ||
+      process.env.OBOLD_API_CHECKIN_TOKEN ||
+      process.env.OBOLD_API_READ_TOKEN
+    );
+    const hasValidToken =
+      (typeof this.config.server.apiAuthToken === 'string' && this.config.server.apiAuthToken.trim().length > 0) ||
+      hasConfiguredKeys ||
+      hasEnvTokens;
 
     if (!isLoopback && !hasValidToken) {
       const isDev = process.env.NODE_ENV === 'development';

@@ -113,6 +113,7 @@ export function generateRescueBundle(options: RescueBundleOptions): RescueBundle
       const seenX = new Set();
       let expectedK = 0;
       let commonSetId = null;
+      let commonTotalN = null;
 
       for (const shareStr of shares) {
         const trimmed = shareStr.trim();
@@ -143,15 +144,30 @@ export function generateRescueBundle(options: RescueBundleOptions): RescueBundle
           } else if (commonSetId !== setId) {
             throw new Error('Share set mismatch: received share from set "' + setId + '", but expected set "' + commonSetId + '".');
           }
+
+          if (commonTotalN === null) {
+            commonTotalN = totalN;
+          } else if (commonTotalN !== totalN) {
+            throw new Error('Share total count mismatch: received ' + totalN + ', expected ' + commonTotalN + '.');
+          }
         } else {
           t = parseInt(legacyMatch[1], 10);
           xVal = parseInt(legacyMatch[3], 10);
           hexData = legacyMatch[4];
         }
 
+        if (xVal < 1 || xVal > 255) {
+          throw new Error('Invalid coordinate x=' + xVal + ': must be between 1 and 255.');
+        }
+
+        if (expectedK === 0) {
+          expectedK = t;
+        } else if (expectedK !== t) {
+          throw new Error('Threshold mismatch: share reports threshold ' + t + ', expected ' + expectedK + '.');
+        }
+
         if (seenX.has(xVal)) continue;
         seenX.add(xVal);
-        expectedK = t;
         parsed.push({ x: xVal, y: hexToBytes(hexData) });
       }
 
@@ -161,6 +177,11 @@ export function generateRescueBundle(options: RescueBundleOptions): RescueBundle
 
       const subset = parsed.slice(0, expectedK);
       const secretLen = subset[0].y.length;
+      for (let i = 0; i < subset.length; i++) {
+        if (subset[i].y.length !== secretLen) {
+          throw new Error('Inconsistent share payload lengths.');
+        }
+      }
       const secretBytes = new Uint8Array(secretLen);
 
       for (let byteIdx = 0; byteIdx < secretLen; byteIdx++) {
@@ -535,7 +556,10 @@ export function generateRescueBundle(options: RescueBundleOptions): RescueBundle
   };
 }
 
-export function verifyRescueBundle(htmlContent: string): { valid: boolean; manifest?: RescueBundleManifest; error?: string } {
+export function verifyRescueBundle(
+  htmlContent: string,
+  options?: { signatureHex?: string; signingKey?: string | Buffer }
+): { valid: boolean; manifest?: RescueBundleManifest; error?: string } {
   try {
     const manifestMatch = htmlContent.match(/<script id="obold-rescue-manifest" type="application\/json">([\s\S]*?)<\/script>/);
     const vaultMatch = htmlContent.match(/<script id="obold-vault-data" type="application\/json">([\s\S]*?)<\/script>/);
@@ -602,6 +626,16 @@ export function verifyRescueBundle(htmlContent: string): { valid: boolean; manif
 
     if (manifest.threshold < 2 || manifest.totalShares < manifest.threshold) {
       return { valid: false, error: 'Invalid threshold or share parameters in manifest.' };
+    }
+
+    if (options?.signatureHex && options?.signingKey) {
+      const sigValid = verifyRescueSignature(htmlContent, options.signatureHex, options.signingKey);
+      if (!sigValid) {
+        return {
+          valid: false,
+          error: 'Cryptographic signature verification failed: detached signature is invalid or secret key mismatch.',
+        };
+      }
     }
 
     return { valid: true, manifest };

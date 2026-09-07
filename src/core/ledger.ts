@@ -49,7 +49,17 @@ export class AtomicExecutionLedger {
     plugin: string,
     rawConfig: Record<string, any>,
     maxAttempts: number = 10,
-    customIdempotencyKey?: string
+    customIdempotencyKey?: string,
+    contractMetadata?: {
+      destructive?: boolean;
+      privileged?: boolean;
+      pluginVersion?: string | null;
+      pluginDigest?: string | null;
+      configHash?: string | null;
+      payloadHash?: string | null;
+      deadlineAt?: number | null;
+      replaySafety?: 'SAFE' | 'IDEMPOTENT' | 'UNKNOWN' | 'FORBIDDEN';
+    }
   ): LedgerRecord {
     const id = `led-${switchId}-${stageId}-${actionId}-${Date.now()}-${randomUUID().substring(0, 8)}`;
     const now = Date.now();
@@ -70,6 +80,14 @@ export class AtomicExecutionLedger {
       payloadSnapshot,
       createdAt: now,
       updatedAt: now,
+      destructive: contractMetadata?.destructive ?? false,
+      privileged: contractMetadata?.privileged ?? false,
+      pluginVersion: contractMetadata?.pluginVersion || null,
+      pluginDigest: contractMetadata?.pluginDigest || null,
+      configHash: contractMetadata?.configHash || null,
+      payloadHash: contractMetadata?.payloadHash || null,
+      deadlineAt: contractMetadata?.deadlineAt || null,
+      replaySafety: contractMetadata?.replaySafety || 'UNKNOWN',
     };
 
     this.db.insertLedgerEntry(entry);

@@ -282,3 +282,50 @@ export async function validateWebSocketUrl(
 
   return { valid: true, url: parsed, pinnedIp };
 }
+
+export interface WebSocketSsrfOptions {
+  headers?: Record<string, string>;
+  tls?: Record<string, any>;
+  [key: string]: any;
+}
+
+export async function createWebSocketWithSsrfGuard(
+  rawUrl: string,
+  allowPrivate: boolean = false,
+  protocols?: string | string[],
+  options?: WebSocketSsrfOptions
+): Promise<{ ws: WebSocket; url: URL; pinnedIp?: string }> {
+  const validation = await validateWebSocketUrl(rawUrl, allowPrivate);
+  if (!validation.valid || !validation.url) {
+    throw new Error(validation.error || `SSRF validation failed for WebSocket URL: ${rawUrl}`);
+  }
+
+  const parsed = validation.url;
+  let connectUrl = rawUrl;
+  const wsOptions: Record<string, any> = { ...(options || {}) };
+
+  if (!allowPrivate && validation.pinnedIp) {
+    const originalHost = parsed.host;
+    const pinnedHost = validation.pinnedIp.includes(':') ? `[${validation.pinnedIp}]` : validation.pinnedIp;
+    const portPart = parsed.port ? `:${parsed.port}` : '';
+    connectUrl = `${parsed.protocol}//${pinnedHost}${portPart}${parsed.pathname}${parsed.search}`;
+
+    wsOptions.headers = {
+      Host: originalHost,
+      ...(wsOptions.headers || {}),
+    };
+
+    if (parsed.protocol === 'wss:') {
+      wsOptions.tls = {
+        serverName: parsed.hostname,
+        ...(wsOptions.tls || {}),
+      };
+    }
+  }
+
+  const ws: WebSocket = protocols !== undefined
+    ? new (WebSocket as any)(connectUrl, protocols, wsOptions)
+    : new (WebSocket as any)(connectUrl, wsOptions);
+
+  return { ws, url: parsed, pinnedIp: validation.pinnedIp };
+}

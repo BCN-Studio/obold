@@ -230,4 +230,157 @@ describe('Execution Contracts & Emergency Cascade Abort', () => {
     const tamperedValid = verifyRescueSignature(bundle.html + ' ', sig, secretKey);
     expect(tamperedValid).toBe(false);
   });
+
+  it('Canonical JSON serializes undefined in arrays as null and omits object undefined/functions/symbols', () => {
+    const { canonicalJsonStringify } = require('../src/core/engine.ts');
+    const input = {
+      b: 2,
+      a: 1,
+      c: undefined,
+      d: () => {},
+      e: Symbol('test'),
+      arr: [1, undefined, NaN, Infinity, 'test'],
+    };
+    const json = canonicalJsonStringify(input);
+    expect(json).toBe('{"a":1,"arr":[1,null,null,null,"test"],"b":2}');
+  });
+
+  it('ShamirSecretSharing rejects invalid x, mismatched thresholds, mismatched total, and unequal payload lengths', () => {
+    const { ShamirSecretSharing } = require('../src/crypto/shamir.ts');
+    const shares = ShamirSecretSharing.split('super-secret-key-12345', 5, 3);
+    const parts = shares[0].split('-');
+
+    expect(() => ShamirSecretSharing.combine([
+      `obold-share-3-of-5-0-${parts[8]}`,
+      shares[1],
+      shares[2]
+    ])).toThrow(/x-coordinate .* must be between 1 and 255/);
+
+    expect(() => ShamirSecretSharing.combine([
+      `obold-share-2-of-5-1-${parts[8]}`,
+      shares[1],
+      shares[2]
+    ])).toThrow(/Mismatched share thresholds/);
+
+    expect(() => ShamirSecretSharing.combine([
+      `obold-share-3-of-6-1-${parts[8]}`,
+      shares[1],
+      shares[2]
+    ])).toThrow(/Mismatched total shares count/);
+
+    expect(() => ShamirSecretSharing.combine([
+      `obold-share-3-of-5-1-${parts[8].slice(0, 4)}`,
+      shares[1],
+      shares[2]
+    ])).toThrow(/Inconsistent share payload length/);
+  });
+
+  it('Replay halts in UNKNOWN state on plugin digest or version mismatch', async () => {
+    if (!engine || !db) throw new Error('Engine or DB not initialized');
+
+    const testPlugin = {
+      id: 'core:tamper_test',
+      name: 'Tamper Test Plugin',
+      description: 'Tamper test',
+      version: '1.0.0',
+      validateConfig: () => ({ valid: true }),
+      execute: async () => ({ success: true, actionId: 'a', plugin: 'core:tamper_test', durationMs: 0 }),
+    };
+    plugins.register(testPlugin);
+
+    db.insertLedgerEntry({
+      id: 'led-tamper-001',
+      switchId: 'vault-cascade',
+      stageId: 'stg-1',
+      actionId: 'act-tamper',
+      plugin: 'core:tamper_test',
+      state: 'EXECUTING',
+      idempotencyKey: 'idemp-tamper-1',
+      attemptCount: 1,
+      maxAttempts: 3,
+      nextRetryAt: null,
+      lastError: null,
+      payloadSnapshot: null,
+      resultSnapshot: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      dispatchedAt: Date.now(),
+      acknowledgedAt: null,
+      destructive: false,
+      privileged: false,
+      pluginVersion: '0.9.0',
+      pluginDigest: 'sha256-invalid-digest',
+      configHash: null,
+      payloadHash: null,
+      deadlineAt: null,
+      replaySafety: 'UNKNOWN',
+    });
+
+    await engine.replayLedger();
+    const entryAfter = db.getLedgerEntry('led-tamper-001');
+    expect(entryAfter?.state).toBe('UNKNOWN');
+    expect(entryAfter?.lastError).toContain('digest mismatch');
+  });
+
+  it('Replay honors immutable destructive contract field even when active config is changed to false', async () => {
+    if (!engine || !db) throw new Error('Engine or DB not initialized');
+
+    db.insertLedgerEntry({
+      id: 'led-dest-persist-001',
+      switchId: 'vault-cascade',
+      stageId: 'stg-1',
+      actionId: 'act-unregistered',
+      plugin: 'core:unregistered_plugin_xyz',
+      state: 'EXECUTING',
+      idempotencyKey: 'idemp-dest-persist-1',
+      attemptCount: 1,
+      maxAttempts: 3,
+      nextRetryAt: null,
+      lastError: null,
+      payloadSnapshot: null,
+      resultSnapshot: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      dispatchedAt: Date.now(),
+      acknowledgedAt: null,
+      destructive: true,
+      privileged: false,
+      pluginVersion: null,
+      pluginDigest: null,
+      configHash: null,
+      payloadHash: null,
+      deadlineAt: null,
+      replaySafety: 'UNKNOWN',
+    });
+
+    await engine.replayLedger();
+    const entryAfter = db.getLedgerEntry('led-dest-persist-001');
+    expect(entryAfter?.state).toBe('UNKNOWN');
+    expect(entryAfter?.lastError).toContain('Crash recovery paused: action is destructive');
+  });
+
+  it('verifyRescueBundle accepts detached signature option', () => {
+    const { generateRescueBundle, generateRescueSignature, verifyRescueBundle } = require('../src/crypto/rescue.ts');
+    const bundle = generateRescueBundle({
+      payload: 'SIGNATURE_TEST_KEY',
+      threshold: 2,
+      totalShares: 3,
+    });
+    const key = 'secret-sign-key-xyz';
+    const sig = generateRescueSignature(bundle.html, key);
+
+    const valid = verifyRescueBundle(bundle.html, { signatureHex: sig, signingKey: key });
+    expect(valid.valid).toBe(true);
+
+    const invalid = verifyRescueBundle(bundle.html, { signatureHex: 'a'.repeat(64), signingKey: key });
+    expect(invalid.valid).toBe(false);
+    expect(invalid.error).toContain('signature verification failed');
+  });
+
+  it('createWebSocketWithSsrfGuard blocks loopback and private websocket destinations', async () => {
+    const { createWebSocketWithSsrfGuard } = require('../src/plugins/network-guard.ts');
+    expect(createWebSocketWithSsrfGuard('ws://127.0.0.1:8080')).rejects.toThrow();
+    expect(createWebSocketWithSsrfGuard('ws://169.254.169.254/latest')).rejects.toThrow();
+    expect(createWebSocketWithSsrfGuard('ws://localhost:9000')).rejects.toThrow();
+  });
 });

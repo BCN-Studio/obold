@@ -282,4 +282,39 @@ describe('Security Boundaries & Authentication Enforcement', () => {
     const res5 = bus.handleConnection({}, '192.0.2.3');
     expect(res5.status).toBe(429);
   });
+
+  it('Server permits remote bind when apiKeys or OBOLD_API_*_TOKEN is configured', () => {
+    const { OboldServer } = require('../src/server/server.ts');
+
+    const configWithApiKeys = normalizeAndValidateConfig({
+      version: '1.0.0',
+      storage: { path: TEST_DB },
+      crypto: { algorithm: 'chacha20-poly1305', keyDerivation: 'scrypt' },
+      server: {
+        enabled: true,
+        host: '0.0.0.0',
+        port: 8089,
+        apiKeys: [{ token: 'key-12345678', roles: ['operator'] }],
+      },
+      switches: [],
+    });
+
+    const server1 = new OboldServer(configWithApiKeys, engine!, tokenManager);
+    expect(configWithApiKeys.server.host).toBe('0.0.0.0');
+    expect(configWithApiKeys.server.apiKeys?.length).toBe(1);
+
+    expect(() =>
+      normalizeAndValidateConfig({
+        version: '1.0.0',
+        storage: { path: TEST_DB },
+        crypto: { algorithm: 'chacha20-poly1305', keyDerivation: 'scrypt' },
+        server: {
+          enabled: true,
+          host: '0.0.0.0',
+          port: 8089,
+        },
+        switches: [],
+      })
+    ).toThrow(/Refusing remote host binding/);
+  });
 });
