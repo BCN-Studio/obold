@@ -5,7 +5,7 @@
 [![License: BCN Sovereign](https://img.shields.io/badge/License-BCN%20Sovereign-emerald.svg)](LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/Runtime-Bun-cyan.svg)](https://bun.sh)
 [![Ledger: SQLite WAL](https://img.shields.io/badge/Storage-SQLite%20WAL-blue.svg)](https://sqlite.org)
-[![Security: Audited](https://img.shields.io/badge/Security-Threat%20Model-purple.svg)](THREAT_MODEL.md)
+[![Security: Threat Model Included](https://img.shields.io/badge/Security-Threat%20Model-purple.svg)](THREAT_MODEL.md)
 [![Website: obold.bcnstudio.tech](https://img.shields.io/badge/Website-obold.bcnstudio.tech-purple.svg)](https://obold.bcnstudio.tech)
 
 ---

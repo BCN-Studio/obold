@@ -188,4 +188,98 @@ describe('Security Boundaries & Authentication Enforcement', () => {
 
     router.destroy();
   });
+
+  it('Blocks unauthenticated localhost requests from executing operator actions (trigger/abort)', async () => {
+    if (!engine) throw new Error('Engine not initialized');
+    const router = new ApiRouter(engine, tokenManager, sseBus, healthHandler, {
+      host: '127.0.0.1',
+      port: 8080,
+    });
+
+    const readReq = new Request('http://127.0.0.1:8080/api/v1/switches', { method: 'GET' });
+    const readRes = await router.handleRequest(readReq);
+    expect(readRes.status).toBe(200);
+
+    const triggerReq = new Request('http://127.0.0.1:8080/api/v1/switches/test-switch/trigger', { method: 'POST' });
+    const triggerRes = await router.handleRequest(triggerReq);
+    expect(triggerRes.status).toBe(403);
+
+    const abortReq = new Request('http://127.0.0.1:8080/api/v1/switches/test-switch/abort', { method: 'POST' });
+    const abortRes = await router.handleRequest(abortReq);
+    expect(abortRes.status).toBe(403);
+
+    router.destroy();
+  });
+
+  it('Enforces atomic token consumption under high concurrency race (50 parallel requests)', async () => {
+    if (!engine || !db) throw new Error('Engine or DB not initialized');
+    const router = new ApiRouter(engine, tokenManager, sseBus, healthHandler, {
+      host: '127.0.0.1',
+      port: 8080,
+    });
+
+    const { rawToken, tokenRecord } = tokenManager.generateToken('test-switch', 60000);
+    db.saveHeartbeatToken(tokenRecord);
+
+    const promises = Array.from({ length: 50 }, () =>
+      router.handleRequest(
+        new Request('http://127.0.0.1:8080/checkin/consume', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ token: rawToken }),
+        })
+      )
+    );
+
+    const responses = await Promise.all(promises);
+    const successCount = responses.filter((r) => r.status === 200).length;
+    const failureCount = responses.filter((r) => r.status !== 200).length;
+
+    expect(successCount).toBe(1);
+    expect(failureCount).toBe(49);
+
+    router.destroy();
+  });
+
+  it('SSRF guard blocks hostile IP encodings (decimal, hex, mapped IPv6, link-local)', async () => {
+    const { validateTargetUrl } = require('../src/plugins/network-guard.ts');
+
+    const hostileTargets = [
+      'http://2130706433',
+      'http://0x7f000001',
+      'http://[::ffff:127.0.0.1]',
+      'http://[::ffff:10.0.0.1]',
+      'http://[::ffff:169.254.169.254]',
+      'http://[fe80::1]',
+      'http://[fc00::1]',
+      'http://100.64.0.1',
+      'http://198.18.0.1',
+    ];
+
+    for (const target of hostileTargets) {
+      const res = await validateTargetUrl(target, false);
+      expect(res.valid).toBe(false);
+      expect(res.error).toMatch(/Blocked private\/link-local SSRF|Blocked localhost/);
+    }
+  });
+
+  it('SSE event bus enforces connection ceiling and per-IP limit', () => {
+    const { SseEventBus } = require('../src/server/sse.ts');
+    const bus = new SseEventBus(3, 2);
+
+    const res1 = bus.handleConnection({}, '192.0.2.1');
+    expect(res1.status).toBe(200);
+
+    const res2 = bus.handleConnection({}, '192.0.2.1');
+    expect(res2.status).toBe(200);
+
+    const res3 = bus.handleConnection({}, '192.0.2.1');
+    expect(res3.status).toBe(429);
+
+    const res4 = bus.handleConnection({}, '192.0.2.2');
+    expect(res4.status).toBe(200);
+
+    const res5 = bus.handleConnection({}, '192.0.2.3');
+    expect(res5.status).toBe(429);
+  });
 });

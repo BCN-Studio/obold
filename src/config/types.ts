@@ -180,6 +180,7 @@ export interface ExecutionResult {
   durationMs: number;
   idempotencyKey?: string;
   deliveryErrorType?: DeliveryErrorType;
+  statusCode?: number;
   output?: any;
   error?: string;
   rawResponse?: string;

@@ -12,16 +12,21 @@ export class OboldWatchdog {
   
   public installProcessGuards(): void {
     process.on('uncaughtException', (err: Error) => {
-      this.db.logAudit('FATAL', 'UNCAUGHT_EXCEPTION', `Process encountered an uncaught error: ${err.message}`, {
-        stack: err.stack,
-      });
-      this.db.checkpoint();
-      
-      setTimeout(() => process.exit(1), 100);
+      try {
+        console.error('FATAL UNCAUGHT EXCEPTION:', err?.stack || err);
+      } catch {}
+      process.exit(1);
     });
 
     process.on('unhandledRejection', (reason: any) => {
-      this.db.logAudit('ERROR', 'UNHANDLED_REJECTION', `Unhandled promise rejection: ${reason?.message || reason}`);
+      const reasonStr = String(reason?.stack || reason?.message || reason);
+      try {
+        console.error('UNHANDLED REJECTION:', reasonStr);
+        this.db.logAudit('ERROR', 'UNHANDLED_REJECTION', `Unhandled promise rejection: ${reason?.message || reason}`);
+      } catch {}
+      if (/database disk image is malformed|sqlite|corrupt|fatal|panic/i.test(reasonStr)) {
+        process.exit(1);
+      }
     });
   }
 

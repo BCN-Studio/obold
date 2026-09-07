@@ -54,7 +54,7 @@ export class ShamirSecretSharing {
 
       const randomCoefs = randomBytes(threshold - 1);
       for (let i = 0; i < threshold - 1; i++) {
-        coefficients.push(randomCoefs[i] || 1);
+        coefficients.push(randomCoefs[i]);
       }
 
       for (let shareIndex = 0; shareIndex < totalShares; shareIndex++) {

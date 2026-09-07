@@ -1,7 +1,41 @@
 import { promises as dns } from 'node:dns';
 
-function isIpPrivate(ip: string): boolean {
+function isIpPrivate(rawIp: string): boolean {
+  let ip = rawIp.trim().toLowerCase();
+  const zoneIndex = ip.indexOf('%');
+  if (zoneIndex !== -1) {
+    ip = ip.substring(0, zoneIndex);
+  }
+
+  if (/^\d+$/.test(ip)) {
+    const num = parseInt(ip, 10);
+    if (num >= 0 && num <= 0xffffffff) {
+      ip = `${(num >>> 24) & 255}.${(num >>> 16) & 255}.${(num >>> 8) & 255}.${num & 255}`;
+    }
+  } else if (/^0x[0-9a-f]+$/i.test(ip)) {
+    const num = parseInt(ip, 16);
+    if (num >= 0 && num <= 0xffffffff) {
+      ip = `${(num >>> 24) & 255}.${(num >>> 16) & 255}.${(num >>> 8) & 255}.${num & 255}`;
+    }
+  }
+
   if (ip === '127.0.0.1' || ip === '::1' || ip === 'localhost') {
+    return true;
+  }
+
+  if (ip.startsWith('::ffff:')) {
+    const mapped = ip.substring(7);
+    if (mapped.includes('.')) {
+      return isIpPrivate(mapped);
+    }
+    const hexParts = mapped.split(':');
+    if (hexParts.length === 2) {
+      const p1 = parseInt(hexParts[0], 16);
+      const p2 = parseInt(hexParts[1], 16);
+      if (!isNaN(p1) && !isNaN(p2)) {
+        return isIpPrivate(`${(p1 >> 8) & 255}.${p1 & 255}.${(p2 >> 8) & 255}.${p2 & 255}`);
+      }
+    }
     return true;
   }
 
@@ -22,29 +56,37 @@ function isIpPrivate(ip: string): boolean {
   }
 
   const octets = ip.split('.').map((p) => parseInt(p, 10));
-  if (octets.length === 4) {
+  if (octets.length === 4 && octets.every((o) => !isNaN(o) && o >= 0 && o <= 255)) {
     if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) {
       return true;
     }
     if (octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127) {
       return true;
     }
+    if (octets[0] === 192 && octets[1] === 0 && (octets[2] === 0 || octets[2] === 2)) {
+      return true;
+    }
     if (octets[0] === 198 && (octets[1] === 18 || octets[1] === 19)) {
+      return true;
+    }
+    if (octets[0] === 198 && octets[1] === 51 && octets[2] === 100) {
+      return true;
+    }
+    if (octets[0] === 203 && octets[1] === 0 && octets[2] === 113) {
+      return true;
+    }
+    if (octets[0] >= 224) {
       return true;
     }
   }
 
-  const lower = ip.toLowerCase();
   if (
-    lower.startsWith('fe80:') ||
-    lower.startsWith('fc00:') ||
-    lower.startsWith('fd00:') ||
-    lower.startsWith('::ffff:127.') ||
-    lower.startsWith('::ffff:10.') ||
-    lower.startsWith('::ffff:192.168.') ||
-    lower.startsWith('::ffff:169.254.') ||
-    lower.startsWith('::ffff:0.') ||
-    lower === '::'
+    ip === '::' ||
+    /^fe[89ab]/i.test(ip) ||
+    /^f[cd]/i.test(ip) ||
+    /^ff/i.test(ip) ||
+    ip.startsWith('2001:db8:') ||
+    ip.startsWith('64:ff9b:')
   ) {
     return true;
   }
@@ -55,7 +97,7 @@ function isIpPrivate(ip: string): boolean {
 export async function validateTargetUrl(
   rawUrl: string,
   allowPrivate: boolean = false
-): Promise<{ valid: boolean; error?: string; url?: URL }> {
+): Promise<{ valid: boolean; error?: string; url?: URL; pinnedIp?: string }> {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -68,15 +110,19 @@ export async function validateTargetUrl(
   }
 
   const hostname = parsed.hostname.toLowerCase();
-  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local') || hostname.endsWith('.internal')) {
     if (!allowPrivate) {
       return { valid: false, error: `Blocked localhost/local network target: "${hostname}".` };
     }
   }
 
+  let pinnedIp: string | undefined;
   if (!allowPrivate) {
     try {
       const records = await dns.lookup(hostname, { all: true });
+      if (!records || records.length === 0) {
+        return { valid: false, error: `DNS lookup returned no records for hostname "${hostname}".` };
+      }
       for (const record of records) {
         if (isIpPrivate(record.address)) {
           return {
@@ -85,12 +131,13 @@ export async function validateTargetUrl(
           };
         }
       }
+      pinnedIp = records[0].address;
     } catch (err: any) {
       return { valid: false, error: `DNS lookup failed for hostname "${hostname}": ${err?.message || err}` };
     }
   }
 
-  return { valid: true, url: parsed };
+  return { valid: true, url: parsed, pinnedIp };
 }
 
 export async function fetchWithSsrfGuard(
@@ -108,12 +155,34 @@ export async function fetchWithSsrfGuard(
       throw new Error(validation.error || `SSRF validation failed for target URL: ${currentUrl}`);
     }
 
+    let requestUrl = currentUrl;
     const fetchInit: RequestInit = {
       ...init,
       redirect: 'manual',
     };
 
-    const response = await fetch(currentUrl, fetchInit);
+    if (!allowPrivate && validation.pinnedIp) {
+      const parsed = validation.url;
+      const originalHost = parsed.host;
+      const pinnedHost = validation.pinnedIp.includes(':') ? `[${validation.pinnedIp}]` : validation.pinnedIp;
+      const portPart = parsed.port ? `:${parsed.port}` : '';
+      requestUrl = `${parsed.protocol}//${pinnedHost}${portPart}${parsed.pathname}${parsed.search}`;
+
+      const headers = new Headers(init?.headers);
+      if (!headers.has('Host')) {
+        headers.set('Host', originalHost);
+      }
+      fetchInit.headers = headers;
+
+      if (parsed.protocol === 'https:') {
+        (fetchInit as any).tls = {
+          ...((fetchInit as any).tls || {}),
+          serverName: parsed.hostname,
+        };
+      }
+    }
+
+    const response = await fetch(requestUrl, fetchInit);
 
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       redirectsCount++;
@@ -138,7 +207,7 @@ export async function fetchWithSsrfGuard(
 export async function validateWebSocketUrl(
   rawUrl: string,
   allowPrivate: boolean = false
-): Promise<{ valid: boolean; error?: string; url?: URL }> {
+): Promise<{ valid: boolean; error?: string; url?: URL; pinnedIp?: string }> {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -151,15 +220,19 @@ export async function validateWebSocketUrl(
   }
 
   const hostname = parsed.hostname.toLowerCase();
-  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local') || hostname.endsWith('.internal')) {
     if (!allowPrivate) {
       return { valid: false, error: `Blocked localhost/local network target: "${hostname}".` };
     }
   }
 
+  let pinnedIp: string | undefined;
   if (!allowPrivate) {
     try {
       const records = await dns.lookup(hostname, { all: true });
+      if (!records || records.length === 0) {
+        return { valid: false, error: `DNS lookup returned no records for hostname "${hostname}".` };
+      }
       for (const record of records) {
         if (isIpPrivate(record.address)) {
           return {
@@ -168,11 +241,11 @@ export async function validateWebSocketUrl(
           };
         }
       }
+      pinnedIp = records[0].address;
     } catch (err: any) {
       return { valid: false, error: `DNS lookup failed for hostname "${hostname}": ${err?.message || err}` };
     }
   }
 
-  return { valid: true, url: parsed };
+  return { valid: true, url: parsed, pinnedIp };
 }
-

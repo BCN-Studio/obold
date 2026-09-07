@@ -697,4 +697,56 @@ describe('Failure Injection & Crash Resilience Suite', () => {
     expect(replayRes.executionId).toBeDefined();
     expect(mockPlugin.lastIdempotencyKey).toMatch(/-replay-/);
   });
+
+  test('Test 29: In-Flight Crash Entry Transition to UNKNOWN and Destructive Pause', async () => {
+    const config = createTestConfig(dbPath);
+    config.switches[0].stages[0].actions[0].destructive = true;
+
+    const encPayload = cipher.encryptToString({ command: 'shred /root/keys' });
+
+    db.insertLedgerEntry({
+      id: 'led-crash-destructive-001',
+      switchId: 'test-switch',
+      stageId: 'stage-1',
+      actionId: 'act-1',
+      plugin: 'mock:test',
+      state: 'EXECUTING',
+      idempotencyKey: 'idemp-crash-dest-001',
+      attemptCount: 1,
+      maxAttempts: 5,
+      nextRetryAt: null,
+      lastError: null,
+      payloadSnapshot: encPayload,
+      resultSnapshot: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      dispatchedAt: Date.now(),
+      acknowledgedAt: null,
+    });
+
+    const mockPlugin = new MockPlugin();
+    const testPlugins = new PluginRegistry();
+    testPlugins.register(mockPlugin);
+
+    const testEngine = new OboldEngine(config, db, cipher, testPlugins);
+    await testEngine.replayLedger();
+
+    expect(mockPlugin.callCount).toBe(0);
+    const entryAfter = db.getLedgerEntry('led-crash-destructive-001');
+    expect(entryAfter?.state).toBe('UNKNOWN');
+    expect(entryAfter?.lastError).toContain('Crash recovery paused: action is destructive');
+  });
+
+  test('Test 30: Unbiased Shamir Polynomial Exact Reconstruction Across Multiple Thresholds', () => {
+    for (const threshold of [2, 3, 5, 8]) {
+      const total = threshold + 3;
+      const secret = `unbiased-secret-payload-threshold-${threshold}-${'x'.repeat(32)}`;
+      const shares = ShamirSecretSharing.split(secret, total, threshold);
+      expect(shares.length).toBe(total);
+
+      const subset = shares.slice(0, threshold);
+      const combined = ShamirSecretSharing.combine(subset);
+      expect(combined).toBe(secret);
+    }
+  });
 });

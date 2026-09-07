@@ -15,6 +15,7 @@ import { OboldWatchdog } from '../core/watchdog.ts';
 import { OboldServer } from '../server/server.ts';
 import { runDiagnostics, printDoctorReport } from '../doctor/diagnostics.ts';
 import { resolveMasterKey as resolveKeyBuffer } from '../crypto/kdf.ts';
+import { DAEMON_VERSION } from '../config/version.ts';
 
 export async function runCli(args: string[]): Promise<void> {
   const command = args[0] || 'help';
@@ -76,7 +77,7 @@ export async function runCli(args: string[]): Promise<void> {
     case 'version':
     case '-v':
     case '--version':
-      console.log('obold v1.0.0-beta (BCN Studio)');
+      console.log(`obold v${DAEMON_VERSION} (BCN Studio)`);
       break;
     case 'help':
     case '-h':
@@ -98,13 +99,13 @@ async function handleDoctorCommand(args: string[]): Promise<void> {
 }
 
 async function handleUpdateCommand(args: string[]): Promise<void> {
-  const currentVersion = '1.0.0-beta';
+  const currentVersion = DAEMON_VERSION;
   console.log(`\n🔍 Checking for obold daemon updates (current: v${currentVersion})...`);
 
   try {
     const res = await fetch('https://api.github.com/repos/BCN-Studio/obold/releases/latest', {
       headers: {
-        'User-Agent': 'obold-cli/1.0.0-beta (BCN Studio; +https://bcnstudio.tech)',
+        'User-Agent': `obold-cli/${DAEMON_VERSION} (BCN Studio; +https://bcnstudio.tech)`,
         'Accept': 'application/vnd.github.v3+json',
       },
     });

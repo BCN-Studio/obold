@@ -107,7 +107,7 @@ export class ApiRouter {
 
     if (!token) {
       if (!hasConfiguredTokens && isLoopback) {
-        return new Set(['admin', 'operator', 'checkin', 'read']);
+        return new Set(['read', 'checkin']);
       }
       return new Set();
     }
@@ -115,10 +115,24 @@ export class ApiRouter {
     const roles = new Set<string>();
 
     if (this.serverConfig.apiAuthToken && this.safeCompare(token, this.serverConfig.apiAuthToken)) {
-      roles.add('admin');
-      roles.add('operator');
-      roles.add('checkin');
-      roles.add('read');
+      const explicitRole = (this.serverConfig as any).apiAuthRole || process.env.OBOLD_API_AUTH_ROLE;
+      if (explicitRole === 'read') {
+        roles.add('read');
+      } else if (explicitRole === 'checkin') {
+        roles.add('checkin');
+      } else if (explicitRole === 'operator') {
+        roles.add('operator');
+        roles.add('checkin');
+        roles.add('read');
+      } else {
+        const hasScopedKeys = Boolean(this.serverConfig.apiKeys && this.serverConfig.apiKeys.length > 0);
+        if (!hasScopedKeys) {
+          roles.add('admin');
+        }
+        roles.add('operator');
+        roles.add('checkin');
+        roles.add('read');
+      }
     }
 
     if (this.serverConfig.apiKeys && this.serverConfig.apiKeys.length > 0) {
@@ -309,7 +323,7 @@ export class ApiRouter {
           return this.jsonResponse({ error: 'Forbidden: Insufficient token permissions. Required: "read"' }, 403, req);
         }
       }
-      return this.sseBus.handleConnection(this.getCorsHeaders(req));
+      return this.sseBus.handleConnection(this.getCorsHeaders(req), clientIp);
     }
 
     if (path === '/checkin' && method === 'GET') {
@@ -351,18 +365,16 @@ export class ApiRouter {
         process.env.OBOLD_API_READ_TOKEN
       );
 
-      if (hasConfiguredTokens || !isLoopback) {
-        const auth = this.isAuthorized(req, requiredRole);
-        if (!auth.authenticated) {
-          const authFailRl = this.rateLimiter.consume(`auth-fail:${clientIp}`, 5, 60000);
-          if (!authFailRl.allowed) {
-            return this.rateLimitResponse(authFailRl, 5, req);
-          }
-          return this.jsonResponse({ error: 'Unauthorized: invalid or missing API token' }, 401, req);
+      const auth = this.isAuthorized(req, requiredRole);
+      if (!auth.authenticated) {
+        const authFailRl = this.rateLimiter.consume(`auth-fail:${clientIp}`, 5, 60000);
+        if (!authFailRl.allowed) {
+          return this.rateLimitResponse(authFailRl, 5, req);
         }
-        if (!auth.authorized) {
-          return this.jsonResponse({ error: `Forbidden: Insufficient token permissions. Required role: "${requiredRole}"` }, 403, req);
-        }
+        return this.jsonResponse({ error: 'Unauthorized: invalid or missing API token' }, 401, req);
+      }
+      if (!auth.authorized) {
+        return this.jsonResponse({ error: `Forbidden: Insufficient token permissions. Required role: "${requiredRole}"` }, 403, req);
       }
     }
 

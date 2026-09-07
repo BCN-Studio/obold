@@ -39,10 +39,15 @@ export class OboldServer {
     const isLoopback = host === '127.0.0.1' || host === 'localhost' || host === '::1';
     const hasValidToken = typeof this.config.server.apiAuthToken === 'string' && this.config.server.apiAuthToken.trim().length > 0;
 
-    if (!isLoopback && !hasValidToken && !process.env.OBOLD_UNSAFE_BIND) {
-      const errMsg = `Refusing to bind HTTP server to remote interface "${host}" without API authentication configured. Set "server.apiAuthToken" in your config or pass OBOLD_UNSAFE_BIND=1.`;
-      this.engine.getDb().logAudit('FATAL', 'SECURITY_UNSAFE_BIND', errMsg);
-      throw new Error(errMsg);
+    if (!isLoopback && !hasValidToken) {
+      const isDev = process.env.NODE_ENV === 'development';
+      const allowUnsafe = process.env.OBOLD_UNSAFE_BIND === '1';
+      if (!isDev || !allowUnsafe) {
+        const errMsg = `Refusing to bind HTTP server to remote interface "${host}" without API authentication configured. Set "server.apiAuthToken" in your config.`;
+        this.engine.getDb().logAudit('FATAL', 'SECURITY_UNSAFE_BIND', errMsg);
+        throw new Error(errMsg);
+      }
+      this.engine.getDb().logAudit('WARN', 'SECURITY_UNSAFE_BIND_DEV', `WARNING: HTTP server bound to remote interface "${host}" without authentication under NODE_ENV=development.`);
     }
 
     this.server = Bun.serve({

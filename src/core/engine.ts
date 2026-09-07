@@ -16,6 +16,18 @@ import type { OboldCipher } from '../crypto/cipher.ts';
 import type { PluginRegistry } from '../plugins/registry.ts';
 import { AtomicExecutionLedger } from './ledger.ts';
 import { DeadLetterRetryQueue } from './retry-queue.ts';
+import { DAEMON_VERSION } from '../config/version.ts';
+
+export function canonicalJsonStringify(obj: any): string {
+  if (obj === null || typeof obj !== 'object') {
+    return JSON.stringify(obj);
+  }
+  if (Array.isArray(obj)) {
+    return '[' + obj.map((item) => canonicalJsonStringify(item)).join(',') + ']';
+  }
+  const keys = Object.keys(obj).sort();
+  return '{' + keys.map((key) => JSON.stringify(key) + ':' + canonicalJsonStringify(obj[key])).join(',') + '}';
+}
 
 export class OboldEngine extends EventEmitter {
   private config: OboldConfig;
@@ -61,7 +73,7 @@ export class OboldEngine extends EventEmitter {
       reminders: sw.reminders || [],
       duress: sw.duress || null,
     };
-    return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
+    return createHash('sha256').update(canonicalJsonStringify(canonical)).digest('hex');
   }
 
   private freezeSwitchPlan(sw: SwitchConfig): { planHash: string; encryptedPlan: string } {
@@ -114,20 +126,35 @@ export class OboldEngine extends EventEmitter {
   }
 
   private classifyError(err: any, result?: ExecutionResult): DeliveryErrorType {
+    if (result?.deliveryErrorType) {
+      return result.deliveryErrorType;
+    }
+
+    if (result?.statusCode) {
+      const code = result.statusCode;
+      if (code === 400 || code === 401 || code === 403 || code === 404 || code === 422) {
+        return 'PERMANENT';
+      }
+      if (code === 408 || code === 429 || code === 500 || code === 502 || code === 503 || code === 504) {
+        return 'TRANSIENT';
+      }
+    }
+
+    const errCode = (err?.code || '').toUpperCase();
+    if (['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENOTFOUND'].includes(errCode)) {
+      return 'TRANSIENT';
+    }
+
     const errorStr = (
       (err?.message || '') +
       ' ' +
-      (result?.error || '') +
-      ' ' +
-      (result?.rawResponse || '')
+      (result?.error || '')
     ).toLowerCase();
 
     const permanentPatterns = [
       'invalid credentials',
       'unauthorized',
       'forbidden',
-      '401',
-      '403',
       'invalid token',
       'chat not found',
       'user not found',
@@ -145,6 +172,10 @@ export class OboldEngine extends EventEmitter {
       }
     }
 
+    if (/\b(401|403)\b/.test(errorStr)) {
+      return 'PERMANENT';
+    }
+
     const transientPatterns = [
       'timeout',
       'econnreset',
@@ -155,10 +186,6 @@ export class OboldEngine extends EventEmitter {
       'socket hang up',
       'network error',
       'rate limit',
-      '429',
-      '502',
-      '503',
-      '504',
       'temporarily unavailable',
     ];
 
@@ -166,6 +193,10 @@ export class OboldEngine extends EventEmitter {
       if (errorStr.includes(pattern)) {
         return 'TRANSIENT';
       }
+    }
+
+    if (/\b(408|429|500|502|503|504)\b/.test(errorStr)) {
+      return 'TRANSIENT';
     }
 
     return 'UNKNOWN';
@@ -205,6 +236,27 @@ export class OboldEngine extends EventEmitter {
 
     for (const entry of entries) {
       const sw = this.config.switches.find((s) => s.id === entry.switchId);
+      const isDestructive = (sw?.stages.flatMap((st) => st.actions).find((a) => a.id === entry.actionId)?.destructive) || false;
+
+      if (entry.state === 'EXECUTING' || entry.state === 'DISPATCHED') {
+        this.db.logAudit(
+          'WARN',
+          'LEDGER_RECOVERY_UNKNOWN',
+          `Action ${entry.actionId} was in ${entry.state} state during crash. Transitioned to UNKNOWN.`,
+          { id: entry.id, actionId: entry.actionId, plugin: entry.plugin },
+          entry.switchId
+        );
+        if (isDestructive) {
+          this.ledger.markFailed(
+            entry.id,
+            'Crash recovery paused: action is destructive and was in-flight (UNKNOWN state). Manual reconciliation required.',
+            'UNKNOWN',
+            null
+          );
+          continue;
+        }
+      }
+
       const plugin = this.plugins.get(entry.plugin);
 
       if (!plugin) {
@@ -217,6 +269,8 @@ export class OboldEngine extends EventEmitter {
       this.ledger.claimEntry(entry.id);
       this.ledger.markExecuting(entry.id);
 
+      const originalDeadline = sw ? (this.db.getSwitch(sw.id)?.next_deadline_at || (entry.createdAt + sw.intervalMs)) : entry.createdAt;
+
       try {
         const result = await plugin.execute(payload, {
           switchId: entry.switchId,
@@ -224,7 +278,7 @@ export class OboldEngine extends EventEmitter {
           stageId: entry.stageId,
           actionId: entry.actionId,
           idempotencyKey: entry.idempotencyKey || entry.id,
-          deadlineAt: Date.now(),
+          deadlineAt: originalDeadline,
         });
 
         if (result.success) {
@@ -617,8 +671,8 @@ export class OboldEngine extends EventEmitter {
       const pluginVersion = plugin ? plugin.version : '1.0.0';
       const pluginDigest = this.plugins.getPluginDigest(action.plugin);
 
-      const configHash = createHash('sha256').update(JSON.stringify(action.config || {})).digest('hex');
-      const payloadHash = createHash('sha256').update(JSON.stringify({
+      const configHash = createHash('sha256').update(canonicalJsonStringify(action.config || {})).digest('hex');
+      const payloadHash = createHash('sha256').update(canonicalJsonStringify({
         switchId: sw.id,
         stageId: stage.id,
         actionId: action.id,
@@ -636,7 +690,7 @@ export class OboldEngine extends EventEmitter {
         configSnapshot: action.config,
         configHash,
         payloadHash,
-        appVersion: '1.0.0-beta',
+        appVersion: DAEMON_VERSION,
         idempotencyKey,
         destructive: action.destructive === true,
         privileged: action.privileged === true,
@@ -749,6 +803,8 @@ export class OboldEngine extends EventEmitter {
       this.ledger.claimEntry(entry.id);
       this.ledger.markExecuting(entry.id);
 
+      const originalDeadline = sw ? (this.db.getSwitch(sw.id)?.next_deadline_at || (entry.createdAt + sw.intervalMs)) : entry.createdAt;
+
       try {
         const result = await this.executeWithTimeout(
           (signal) =>
@@ -758,7 +814,7 @@ export class OboldEngine extends EventEmitter {
               stageId: entry.stageId,
               actionId: entry.actionId,
               idempotencyKey: entry.idempotencyKey || entry.id,
-              deadlineAt: Date.now(),
+              deadlineAt: originalDeadline,
               signal,
             }),
           30000,
@@ -968,8 +1024,8 @@ export class OboldEngine extends EventEmitter {
           const switchVersion = sw.version ?? 1;
           const pluginVersion = plugin ? plugin.version : '1.0.0';
           const pluginDigest = this.plugins.getPluginDigest(act.plugin);
-          const configHash = createHash('sha256').update(JSON.stringify(act.config || {})).digest('hex');
-          const payloadHash = createHash('sha256').update(JSON.stringify({
+          const configHash = createHash('sha256').update(canonicalJsonStringify(act.config || {})).digest('hex');
+          const payloadHash = createHash('sha256').update(canonicalJsonStringify({
             switchId: sw.id,
             stageId: 'duress',
             actionId: act.id,
@@ -987,7 +1043,7 @@ export class OboldEngine extends EventEmitter {
             configSnapshot: act.config,
             configHash,
             payloadHash,
-            appVersion: '1.0.0-beta',
+            appVersion: DAEMON_VERSION,
             idempotencyKey,
             destructive: false,
             privileged: false,

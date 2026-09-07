@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import type { OboldDatabase } from '../db/database.ts';
 import type { LedgerRecord } from '../config/types.ts';
 
@@ -27,7 +28,8 @@ export class DeadLetterRetryQueue {
     }
 
     const expDelay = Math.min(this.maxDelayMs, this.baseDelayMs * Math.pow(2, attempt));
-    const jitterFactor = 0.5 + Math.random() * 0.5;
+    const randomEntropy = randomBytes(4).readUInt32LE(0) / 0xffffffff;
+    const jitterFactor = 0.5 + randomEntropy * 0.5;
     const finalDelay = Math.round(expDelay * jitterFactor);
     const nextRetryAt = now + finalDelay;
 
