@@ -59,6 +59,11 @@ export class AtomicExecutionLedger {
       payloadHash?: string | null;
       deadlineAt?: number | null;
       replaySafety?: 'SAFE' | 'IDEMPOTENT' | 'UNKNOWN' | 'FORBIDDEN';
+      switchVersion?: number;
+      planHash?: string | null;
+      appVersion?: string | null;
+      contractVersion?: number;
+      contractHash?: string | null;
     }
   ): LedgerRecord {
     const id = `led-${switchId}-${stageId}-${actionId}-${Date.now()}-${randomUUID().substring(0, 8)}`;
@@ -88,6 +93,11 @@ export class AtomicExecutionLedger {
       payloadHash: contractMetadata?.payloadHash || null,
       deadlineAt: contractMetadata?.deadlineAt || null,
       replaySafety: contractMetadata?.replaySafety || 'UNKNOWN',
+      switchVersion: contractMetadata?.switchVersion ?? 1,
+      planHash: contractMetadata?.planHash || null,
+      appVersion: contractMetadata?.appVersion || null,
+      contractVersion: contractMetadata?.contractVersion ?? 1,
+      contractHash: contractMetadata?.contractHash || null,
     };
 
     this.db.insertLedgerEntry(entry);
@@ -224,7 +234,12 @@ export class AtomicExecutionLedger {
       const decryptedStr = this.cipher.decryptFromString(entry.payloadSnapshot, aad);
       return JSON.parse(decryptedStr);
     } catch {
-      return {};
+      try {
+        const decryptedStr = this.cipher.decryptFromString(entry.payloadSnapshot);
+        return JSON.parse(decryptedStr);
+      } catch {
+        return {};
+      }
     }
   }
 

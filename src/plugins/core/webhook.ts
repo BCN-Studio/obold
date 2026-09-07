@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import type { IPluginExecutor, PluginExecutionContext, PluginRiskTier } from '../types.ts';
+import type { IPluginExecutor, PluginExecutionContext, PluginRiskTier, ReplaySafety } from '../types.ts';
 import type { ExecutionResult } from '../../config/types.ts';
 import { fetchWithSsrfGuard } from '../network-guard.ts';
 
@@ -9,6 +9,7 @@ export class WebhookPlugin implements IPluginExecutor {
   readonly description = 'Dispatches signed HTTP requests to external APIs, Zapier, n8n, or internal endpoints.';
   readonly version = '1.0.0';
   readonly riskTier: PluginRiskTier = 'SENSITIVE_CORE';
+  readonly replaySafety: ReplaySafety = 'UNKNOWN';
 
   validateConfig(config: Record<string, any>): { valid: boolean; error?: string } {
     if (!config.target_url || typeof config.target_url !== 'string') {

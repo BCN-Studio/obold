@@ -1,6 +1,6 @@
 import { connect as connectTls } from 'node:tls';
 import { createConnection, Socket } from 'node:net';
-import type { IPluginExecutor, PluginExecutionContext } from '../types.ts';
+import type { IPluginExecutor, PluginExecutionContext, ReplaySafety } from '../types.ts';
 import type { ExecutionResult } from '../../config/types.ts';
 
 export class EmailPlugin implements IPluginExecutor {
@@ -8,6 +8,7 @@ export class EmailPlugin implements IPluginExecutor {
   readonly name = 'SMTP Email Dispatcher';
   readonly description = 'Dispatches TLS-encrypted emails and attachments via standard SMTP servers.';
   readonly version = '1.0.0';
+  readonly replaySafety: ReplaySafety = 'UNKNOWN';
 
   validateConfig(config: Record<string, any>): { valid: boolean; error?: string } {
     if (!config.smtp_host || typeof config.smtp_host !== 'string') {

@@ -46,6 +46,10 @@ export interface ExecutionContract {
   idempotencyKey: string;
   destructive?: boolean;
   privileged?: boolean;
+  replaySafety?: 'SAFE' | 'IDEMPOTENT' | 'UNKNOWN' | 'FORBIDDEN';
+  planHash?: string | null;
+  contractVersion?: number;
+  contractHash?: string;
   createdAt: number;
   deadlineAt: number;
 }
@@ -171,6 +175,11 @@ export interface LedgerRecord {
   payloadHash?: string | null;
   deadlineAt?: number | null;
   replaySafety?: 'SAFE' | 'IDEMPOTENT' | 'UNKNOWN' | 'FORBIDDEN';
+  switchVersion?: number;
+  planHash?: string | null;
+  appVersion?: string | null;
+  contractVersion?: number;
+  contractHash?: string | null;
 }
 
 export interface HeartbeatToken {
@@ -273,6 +282,11 @@ export interface ExecutionLedgerRow {
   payload_hash?: string | null;
   deadline_at?: number | null;
   replay_safety?: string | null;
+  switch_version?: number;
+  plan_hash?: string | null;
+  app_version?: string | null;
+  contract_version?: number;
+  contract_hash?: string | null;
 }
 
 export type { PluginExecutionContext, IPluginExecutor, PluginRiskTier } from '../plugins/types.ts';

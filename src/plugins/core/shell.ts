@@ -1,4 +1,4 @@
-import type { IPluginExecutor, PluginExecutionContext, PluginRiskTier } from '../types.ts';
+import type { IPluginExecutor, PluginExecutionContext, PluginRiskTier, ReplaySafety } from '../types.ts';
 import type { ExecutionResult } from '../../config/types.ts';
 
 async function terminateProcessTree(proc: any, isWindows: boolean): Promise<void> {
@@ -40,6 +40,7 @@ export class ShellPlugin implements IPluginExecutor {
   readonly description = 'Executes local host scripts, Docker teardowns, or key-shredding operations.';
   readonly version = '1.0.0';
   readonly riskTier: PluginRiskTier = 'PRIVILEGED_HOST';
+  readonly replaySafety: ReplaySafety = 'UNKNOWN';
 
   validateConfig(config: Record<string, any>): { valid: boolean; error?: string } {
     if (!config.command && !config.script_path) {

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { schnorr } from '@noble/curves/secp256k1.js';
-import type { IPluginExecutor, PluginExecutionContext } from '../types.ts';
+import type { IPluginExecutor, PluginExecutionContext, ReplaySafety } from '../types.ts';
 import type { ExecutionResult } from '../../config/types.ts';
 import { createWebSocketWithSsrfGuard } from '../network-guard.ts';
 
@@ -9,6 +9,8 @@ export class NostrPlugin implements IPluginExecutor {
   readonly name = 'Nostr Decentralized Broadcast';
   readonly description = 'Publishes cryptographically signed broadcasts to decentralized Nostr relays.';
   readonly version = '1.0.0';
+  readonly replaySafety: ReplaySafety = 'IDEMPOTENT';
+  readonly capabilities: string[] = ['NETWORK_PUBLIC'];
 
   validateConfig(config: Record<string, any>): { valid: boolean; error?: string } {
     if (!config.relays || (Array.isArray(config.relays) && config.relays.length === 0)) {
@@ -59,16 +61,6 @@ export class NostrPlugin implements IPluginExecutor {
     const relays = Array.isArray(config.relays) ? config.relays : [config.relays];
     const content = config.content;
 
-    if (context.dryRun) {
-      return {
-        success: true,
-        actionId: context.actionId,
-        plugin: this.id,
-        durationMs: Date.now() - startTime,
-        output: { dryRun: true, relays, contentSnippet: content.substring(0, 100) },
-      };
-    }
-
     let rawKey = config.private_key.trim();
     if (rawKey.startsWith('ENV:')) {
       rawKey = (process.env[rawKey.substring(4).trim()] || '').trim();
@@ -93,9 +85,14 @@ export class NostrPlugin implements IPluginExecutor {
       };
     }
 
-    const createdAt = Math.floor(Date.now() / 1000);
+    const createdAt = typeof config.created_at === 'number'
+      ? config.created_at
+      : (context.deadlineAt ? Math.floor(context.deadlineAt / 1000) : Math.floor(Date.now() / 1000));
     const kind = config.kind || 1;
-    const tags = config.tags || [['t', 'obold'], ['t', 'deadmanswitch']];
+    const tags = config.tags ? [...config.tags] : [['t', 'obold'], ['t', 'deadmanswitch']];
+    if (context.idempotencyKey && !tags.some((t: any) => Array.isArray(t) && t[0] === 'idempotency')) {
+      tags.push(['idempotency', context.idempotencyKey]);
+    }
 
     const serialized = JSON.stringify([0, pubkeyHex, createdAt, kind, tags, content]);
     const eventId = createHash('sha256').update(serialized).digest('hex');
@@ -103,7 +100,7 @@ export class NostrPlugin implements IPluginExecutor {
 
     let sigHex: string;
     try {
-      const sigBytes = schnorr.sign(idBytes, privKeyBytes);
+      const sigBytes = schnorr.sign(idBytes, privKeyBytes, idBytes);
       sigHex = Buffer.from(sigBytes).toString('hex');
     } catch (err: any) {
       return {
@@ -112,6 +109,24 @@ export class NostrPlugin implements IPluginExecutor {
         plugin: this.id,
         durationMs: Date.now() - startTime,
         error: `Nostr BIP-340 Signing Error: ${err.message}`,
+      };
+    }
+
+    if (context.dryRun) {
+      return {
+        success: true,
+        actionId: context.actionId,
+        plugin: this.id,
+        durationMs: Date.now() - startTime,
+        output: {
+          dryRun: true,
+          relays,
+          contentSnippet: content.substring(0, 100),
+          eventId,
+          pubkey: pubkeyHex,
+          tags,
+          signature: sigHex,
+        },
       };
     }
 
@@ -151,7 +166,8 @@ export class NostrPlugin implements IPluginExecutor {
       context.signal.addEventListener('abort', abortHandler, { once: true });
     }
 
-    const allowPrivate = config.allow_private_network === true || config.allow_local === true;
+    const allowPrivate = (context.capabilities?.includes('NETWORK_PRIVATE') === true) &&
+      (config.allow_private_network === true || config.allow_local === true);
 
     try {
       await Promise.all(

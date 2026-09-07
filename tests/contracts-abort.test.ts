@@ -383,4 +383,162 @@ describe('Execution Contracts & Emergency Cascade Abort', () => {
     expect(createWebSocketWithSsrfGuard('ws://169.254.169.254/latest')).rejects.toThrow();
     expect(createWebSocketWithSsrfGuard('ws://localhost:9000')).rejects.toThrow();
   });
+
+  it('canonicalJsonStringify rejects BigInt values with TypeError', () => {
+    const { canonicalJsonStringify } = require('../src/core/engine.ts');
+    expect(() => canonicalJsonStringify({ val: BigInt(123) })).toThrow(TypeError);
+    expect(() => canonicalJsonStringify(BigInt(999))).toThrow(TypeError);
+  });
+
+  it('NostrPlugin generates deterministic event ID and signature for identical deadline and idempotencyKey', async () => {
+    const { NostrPlugin } = require('../src/plugins/core/nostr.ts');
+    const plugin = new NostrPlugin();
+    expect(plugin.replaySafety).toBe('IDEMPOTENT');
+    expect(plugin.capabilities).toContain('NETWORK_PUBLIC');
+
+    const privKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const config = {
+      relays: ['wss://nostr.example.com'],
+      private_key: privKey,
+      content: 'Dead man switch activated',
+    };
+    const context = {
+      switchId: 'sw-nostr-test',
+      switchName: 'Test Switch',
+      stageId: 'stage-1',
+      actionId: 'act-nostr',
+      idempotencyKey: 'idemp-nostr-fixed-001',
+      deadlineAt: 1700000000000,
+      dryRun: true,
+    };
+
+    const res1 = await plugin.execute(config, context);
+    const res2 = await plugin.execute(config, context);
+
+    expect(res1.output.eventId).toBe(res2.output.eventId);
+    expect(res1.output.signature).toBe(res2.output.signature);
+    expect(res1.output.tags).toEqual(res2.output.tags);
+    expect(res1.output.tags.some((t: string[]) => t[0] === 'idempotency' && t[1] === context.idempotencyKey)).toBe(true);
+  });
+
+  it('Rescue vault supports Ed25519 asymmetric detached signatures', () => {
+    const {
+      generateRescueBundle,
+      generateRescueAsymmetricKeyPair,
+      generateRescueSignature,
+      verifyRescueSignature,
+      verifyAuthenticatedRescueBundle,
+    } = require('../src/crypto/rescue.ts');
+
+    const bundle = generateRescueBundle({
+      payload: 'TOP_SECRET_ASYMMETRIC_PAYLOAD',
+      threshold: 2,
+      totalShares: 3,
+    });
+
+    const { publicKey, privateKey } = generateRescueAsymmetricKeyPair();
+    expect(publicKey).toContain('PUBLIC KEY');
+    expect(privateKey).toContain('PRIVATE KEY');
+
+    const signature = generateRescueSignature(bundle.html, privateKey);
+    expect(signature.length).toBe(128);
+
+    const valid = verifyRescueSignature(bundle.html, signature, publicKey);
+    expect(valid).toBe(true);
+
+    const authResult = verifyAuthenticatedRescueBundle(bundle.html, {
+      signatureHex: signature,
+      signingKey: publicKey,
+    });
+    expect(authResult.valid).toBe(true);
+
+    const tampered = verifyRescueSignature(bundle.html + ' ', signature, publicKey);
+    expect(tampered).toBe(false);
+
+    const otherKeyPair = generateRescueAsymmetricKeyPair();
+    const wrongKey = verifyRescueSignature(bundle.html, signature, otherKeyPair.publicKey);
+    expect(wrongKey).toBe(false);
+  });
+
+  it('normalizeMasterKey enforces strict minimum 12-char passphrase unless OBOLD_INSECURE_PASSPHRASE=1', () => {
+    const { normalizeMasterKey } = require('../src/crypto/kdf.ts');
+    const orig = process.env.OBOLD_INSECURE_PASSPHRASE;
+    delete process.env.OBOLD_INSECURE_PASSPHRASE;
+    try {
+      expect(() => normalizeMasterKey('short')).toThrow(/Weak passphrase detected/);
+      process.env.OBOLD_INSECURE_PASSPHRASE = '1';
+      expect(() => normalizeMasterKey('short')).not.toThrow();
+    } finally {
+      if (orig !== undefined) {
+        process.env.OBOLD_INSECURE_PASSPHRASE = orig;
+      } else {
+        delete process.env.OBOLD_INSECURE_PASSPHRASE;
+      }
+    }
+  });
+
+  it('resolveMasterKey preserves pre-existing keyfile on concurrent access without unlinking', () => {
+    const { resolveMasterKey } = require('../src/crypto/kdf.ts');
+    const { writeFileSync, existsSync, unlinkSync } = require('node:fs');
+    const { join } = require('node:path');
+    const { tmpdir } = require('node:os');
+    const testKeyPath = join(tmpdir(), `obold-test-preexist-${Date.now()}.key`);
+    const initialKeyHex = '11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff';
+    writeFileSync(testKeyPath, `${initialKeyHex}\n`, { mode: 0o600 });
+    try {
+      const resolved = resolveMasterKey(undefined, testKeyPath);
+      expect(resolved.toString('hex')).toBe(initialKeyHex);
+      expect(existsSync(testKeyPath)).toBe(true);
+    } finally {
+      if (existsSync(testKeyPath)) {
+        unlinkSync(testKeyPath);
+      }
+    }
+  });
+
+  it('Execution ledger persists contractVersion, planHash, appVersion, and contractHash', () => {
+    if (!db) throw new Error('DB not initialized');
+    const entryId = `led-contract-test-${Date.now()}`;
+    db.insertLedgerEntry({
+      id: entryId,
+      switchId: 'vault-cascade',
+      stageId: 'stg-1',
+      actionId: 'act-contract',
+      plugin: 'core:shell',
+      state: 'PENDING',
+      idempotencyKey: 'idemp-c1',
+      attemptCount: 0,
+      maxAttempts: 3,
+      nextRetryAt: null,
+      lastError: null,
+      payloadSnapshot: null,
+      resultSnapshot: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      dispatchedAt: null,
+      acknowledgedAt: null,
+      destructive: false,
+      privileged: false,
+      pluginVersion: '1.0.0',
+      pluginDigest: 'd1',
+      configHash: 'ch1',
+      payloadHash: 'ph1',
+      deadlineAt: 1700000000000,
+      replaySafety: 'UNKNOWN',
+      switchVersion: 2,
+      planHash: 'planhash123',
+      appVersion: '1.0.0',
+      contractVersion: 1,
+      contractHash: 'contracthash456',
+    });
+
+    const retrieved = db.getLedgerEntry(entryId);
+    expect(retrieved).not.toBeNull();
+    expect(retrieved?.switchVersion).toBe(2);
+    expect(retrieved?.planHash).toBe('planhash123');
+    expect(retrieved?.appVersion).toBe('1.0.0');
+    expect(retrieved?.contractVersion).toBe(1);
+    expect(retrieved?.contractHash).toBe('contracthash456');
+    expect(retrieved?.replaySafety).toBe('UNKNOWN');
+  });
 });

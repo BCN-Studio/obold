@@ -1,4 +1,4 @@
-import { randomBytes, createCipheriv, createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { randomBytes, createCipheriv, createHash, createHmac, timingSafeEqual, generateKeyPairSync, sign, verify } from 'node:crypto';
 import { ShamirSecretSharing } from './shamir.ts';
 import { DAEMON_VERSION } from '../config/version.ts';
 
@@ -556,9 +556,8 @@ export function generateRescueBundle(options: RescueBundleOptions): RescueBundle
   };
 }
 
-export function verifyRescueBundle(
-  htmlContent: string,
-  options?: { signatureHex?: string; signingKey?: string | Buffer }
+export function validateRescueBundleStructure(
+  htmlContent: string
 ): { valid: boolean; manifest?: RescueBundleManifest; error?: string } {
   try {
     const manifestMatch = htmlContent.match(/<script id="obold-rescue-manifest" type="application\/json">([\s\S]*?)<\/script>/);
@@ -628,30 +627,63 @@ export function verifyRescueBundle(
       return { valid: false, error: 'Invalid threshold or share parameters in manifest.' };
     }
 
-    if (options?.signatureHex && options?.signingKey) {
-      const sigValid = verifyRescueSignature(htmlContent, options.signatureHex, options.signingKey);
-      if (!sigValid) {
-        return {
-          valid: false,
-          error: 'Cryptographic signature verification failed: detached signature is invalid or secret key mismatch.',
-        };
-      }
-    }
-
     return { valid: true, manifest };
   } catch (err: any) {
     return { valid: false, error: `Failed to parse rescue bundle HTML: ${err?.message || err}` };
   }
 }
 
+export function verifyRescueBundle(
+  htmlContent: string,
+  options?: { signatureHex?: string; signingKey?: string | Buffer }
+): { valid: boolean; manifest?: RescueBundleManifest; error?: string } {
+  const structResult = validateRescueBundleStructure(htmlContent);
+  if (!structResult.valid) {
+    return structResult;
+  }
+
+  if (options?.signatureHex && options?.signingKey) {
+    const sigValid = verifyRescueSignature(htmlContent, options.signatureHex, options.signingKey);
+    if (!sigValid) {
+      return {
+        valid: false,
+        error: 'Cryptographic signature verification failed: detached signature is invalid or secret key mismatch.',
+      };
+    }
+  }
+
+  return structResult;
+}
+
+export function verifyAuthenticatedRescueBundle(
+  htmlContent: string,
+  options: { signatureHex: string; signingKey: string | Buffer }
+): { valid: boolean; manifest?: RescueBundleManifest; error?: string } {
+  return verifyRescueBundle(htmlContent, options);
+}
+
+export function generateRescueAsymmetricKeyPair(): { publicKey: string; privateKey: string } {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519', {
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  });
+  return { publicKey, privateKey };
+}
+
 export function generateRescueSignature(htmlContent: string, secretKey: string | Buffer): string {
+  if (typeof secretKey === 'string' && secretKey.includes('PRIVATE KEY')) {
+    return sign(null, Buffer.from(htmlContent, 'utf-8'), secretKey).toString('hex');
+  }
   const keyBuf = Buffer.isBuffer(secretKey) ? secretKey : Buffer.from(secretKey, 'utf-8');
   return createHmac('sha256', keyBuf).update(Buffer.from(htmlContent, 'utf-8')).digest('hex');
 }
 
-export function verifyRescueSignature(htmlContent: string, signatureHex: string, secretKey: string | Buffer): boolean {
+export function verifyRescueSignature(htmlContent: string, signatureHex: string, signingKey: string | Buffer): boolean {
   try {
-    const keyBuf = Buffer.isBuffer(secretKey) ? secretKey : Buffer.from(secretKey, 'utf-8');
+    if (typeof signingKey === 'string' && signingKey.includes('PUBLIC KEY')) {
+      return verify(null, Buffer.from(htmlContent, 'utf-8'), signingKey, Buffer.from(signatureHex.trim(), 'hex'));
+    }
+    const keyBuf = Buffer.isBuffer(signingKey) ? signingKey : Buffer.from(signingKey, 'utf-8');
     const computed = createHmac('sha256', keyBuf).update(Buffer.from(htmlContent, 'utf-8')).digest();
     const provided = Buffer.from(signatureHex.trim(), 'hex');
     if (computed.length !== provided.length) return false;

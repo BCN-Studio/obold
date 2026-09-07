@@ -30,48 +30,38 @@ export class OboldDatabase {
     this.initSchema();
   }
 
+  private safeAlterTable(sql: string): void {
+    try {
+      this.db.exec(sql);
+    } catch (err: any) {
+      const msg = String(err?.message || err);
+      if (!/duplicate column name|already exists/i.test(msg)) {
+        throw err;
+      }
+    }
+  }
+
   private initSchema(): void {
     this.db.exec(SCHEMA_SQL);
-    try {
-      this.db.exec('ALTER TABLE switches ADD COLUMN paused_until INTEGER DEFAULT NULL;');
-    } catch {}
-    try {
-      this.db.exec('ALTER TABLE switches ADD COLUMN pause_reason TEXT DEFAULT NULL;');
-    } catch {}
-    try {
-      this.db.exec('ALTER TABLE switches ADD COLUMN plan_hash TEXT DEFAULT NULL;');
-    } catch {}
-    try {
-      this.db.exec('ALTER TABLE switches ADD COLUMN frozen_plan TEXT DEFAULT NULL;');
-    } catch {}
-    try {
-      this.db.exec('ALTER TABLE execution_ledger ADD COLUMN idempotency_key TEXT DEFAULT NULL;');
-    } catch {}
-    try {
-      this.db.exec('ALTER TABLE execution_ledger ADD COLUMN destructive INTEGER DEFAULT NULL;');
-    } catch {}
-    try {
-      this.db.exec('ALTER TABLE execution_ledger ADD COLUMN privileged INTEGER DEFAULT NULL;');
-    } catch {}
-    try {
-      this.db.exec('ALTER TABLE execution_ledger ADD COLUMN plugin_version TEXT DEFAULT NULL;');
-    } catch {}
-    try {
-      this.db.exec('ALTER TABLE execution_ledger ADD COLUMN plugin_digest TEXT DEFAULT NULL;');
-    } catch {}
-    try {
-      this.db.exec('ALTER TABLE execution_ledger ADD COLUMN config_hash TEXT DEFAULT NULL;');
-    } catch {}
-    try {
-      this.db.exec('ALTER TABLE execution_ledger ADD COLUMN payload_hash TEXT DEFAULT NULL;');
-    } catch {}
-    try {
-      this.db.exec('ALTER TABLE execution_ledger ADD COLUMN deadline_at INTEGER DEFAULT NULL;');
-    } catch {}
-    try {
-      this.db.exec("ALTER TABLE execution_ledger ADD COLUMN replay_safety TEXT NOT NULL DEFAULT 'UNKNOWN';");
-    } catch {}
-    this.setMetadata('schema_version', '1.0.0');
+    this.safeAlterTable('ALTER TABLE switches ADD COLUMN paused_until INTEGER DEFAULT NULL;');
+    this.safeAlterTable('ALTER TABLE switches ADD COLUMN pause_reason TEXT DEFAULT NULL;');
+    this.safeAlterTable('ALTER TABLE switches ADD COLUMN plan_hash TEXT DEFAULT NULL;');
+    this.safeAlterTable('ALTER TABLE switches ADD COLUMN frozen_plan TEXT DEFAULT NULL;');
+    this.safeAlterTable('ALTER TABLE execution_ledger ADD COLUMN idempotency_key TEXT DEFAULT NULL;');
+    this.safeAlterTable('ALTER TABLE execution_ledger ADD COLUMN destructive INTEGER DEFAULT NULL;');
+    this.safeAlterTable('ALTER TABLE execution_ledger ADD COLUMN privileged INTEGER DEFAULT NULL;');
+    this.safeAlterTable('ALTER TABLE execution_ledger ADD COLUMN plugin_version TEXT DEFAULT NULL;');
+    this.safeAlterTable('ALTER TABLE execution_ledger ADD COLUMN plugin_digest TEXT DEFAULT NULL;');
+    this.safeAlterTable('ALTER TABLE execution_ledger ADD COLUMN config_hash TEXT DEFAULT NULL;');
+    this.safeAlterTable('ALTER TABLE execution_ledger ADD COLUMN payload_hash TEXT DEFAULT NULL;');
+    this.safeAlterTable('ALTER TABLE execution_ledger ADD COLUMN deadline_at INTEGER DEFAULT NULL;');
+    this.safeAlterTable("ALTER TABLE execution_ledger ADD COLUMN replay_safety TEXT NOT NULL DEFAULT 'UNKNOWN';");
+    this.safeAlterTable('ALTER TABLE execution_ledger ADD COLUMN switch_version INTEGER DEFAULT 1;');
+    this.safeAlterTable('ALTER TABLE execution_ledger ADD COLUMN plan_hash TEXT DEFAULT NULL;');
+    this.safeAlterTable('ALTER TABLE execution_ledger ADD COLUMN app_version TEXT DEFAULT NULL;');
+    this.safeAlterTable('ALTER TABLE execution_ledger ADD COLUMN contract_version INTEGER DEFAULT 1;');
+    this.safeAlterTable('ALTER TABLE execution_ledger ADD COLUMN contract_hash TEXT DEFAULT NULL;');
+    this.setMetadata('schema_version', '2.0.0');
   }
 
   public close(): void {
@@ -396,8 +386,9 @@ export class OboldDatabase {
         payload_snapshot, result_snapshot, created_at, updated_at,
         dispatched_at, acknowledged_at, destructive, privileged,
         plugin_version, plugin_digest, config_hash, payload_hash,
-        deadline_at, replay_safety
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        deadline_at, replay_safety, switch_version, plan_hash,
+        app_version, contract_version, contract_hash
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     `);
     query.run(
       entry.id,
@@ -424,7 +415,12 @@ export class OboldDatabase {
       entry.configHash || null,
       entry.payloadHash || null,
       entry.deadlineAt || null,
-      entry.replaySafety || 'UNKNOWN'
+      entry.replaySafety || 'UNKNOWN',
+      entry.switchVersion !== undefined ? entry.switchVersion : 1,
+      entry.planHash || null,
+      entry.appVersion || null,
+      entry.contractVersion !== undefined ? entry.contractVersion : 1,
+      entry.contractHash || null
     );
   }
 
@@ -515,15 +511,23 @@ export class OboldDatabase {
       if (row.payload_snapshot && row.payload_snapshot.startsWith('enc:')) {
         try {
           oldCipher.decryptFromString(row.payload_snapshot, payloadAad);
-        } catch (err: any) {
-          throw new Error(`Failed to decrypt payload for ledger entry ${row.id} with old key: ${err.message}`);
+        } catch {
+          try {
+            oldCipher.decryptFromString(row.payload_snapshot);
+          } catch (err: any) {
+            throw new Error(`Failed to decrypt payload for ledger entry ${row.id} with old key: ${err.message}`);
+          }
         }
       }
       if (row.result_snapshot && row.result_snapshot.startsWith('enc:')) {
         try {
           oldCipher.decryptFromString(row.result_snapshot, resultAad);
-        } catch (err: any) {
-          throw new Error(`Failed to decrypt result snapshot for ledger entry ${row.id} with old key: ${err.message}`);
+        } catch {
+          try {
+            oldCipher.decryptFromString(row.result_snapshot);
+          } catch (err: any) {
+            throw new Error(`Failed to decrypt result snapshot for ledger entry ${row.id} with old key: ${err.message}`);
+          }
         }
       }
     }
@@ -546,13 +550,23 @@ export class OboldDatabase {
         let changed = false;
 
         if (row.payload_snapshot && row.payload_snapshot.startsWith('enc:')) {
-          const plain = oldCipher.decryptFromString(row.payload_snapshot, payloadAad);
+          let plain: string;
+          try {
+            plain = oldCipher.decryptFromString(row.payload_snapshot, payloadAad);
+          } catch {
+            plain = oldCipher.decryptFromString(row.payload_snapshot);
+          }
           newPayload = newCipher.encryptToString(plain, payloadAad);
           changed = true;
         }
 
         if (row.result_snapshot && row.result_snapshot.startsWith('enc:')) {
-          const plain = oldCipher.decryptFromString(row.result_snapshot, resultAad);
+          let plain: string;
+          try {
+            plain = oldCipher.decryptFromString(row.result_snapshot, resultAad);
+          } catch {
+            plain = oldCipher.decryptFromString(row.result_snapshot);
+          }
           newResult = newCipher.encryptToString(plain, resultAad);
           changed = true;
         }
@@ -612,6 +626,11 @@ export class OboldDatabase {
       payloadHash: row.payload_hash || null,
       deadlineAt: row.deadline_at || null,
       replaySafety: (row.replay_safety as any) || 'UNKNOWN',
+      switchVersion: row.switch_version !== null && row.switch_version !== undefined ? row.switch_version : undefined,
+      planHash: row.plan_hash || null,
+      appVersion: row.app_version || null,
+      contractVersion: row.contract_version !== null && row.contract_version !== undefined ? row.contract_version : undefined,
+      contractHash: row.contract_hash || null,
     };
   }
 }

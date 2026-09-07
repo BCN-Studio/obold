@@ -19,6 +19,9 @@ import { DeadLetterRetryQueue } from './retry-queue.ts';
 import { DAEMON_VERSION } from '../config/version.ts';
 
 export function canonicalJsonStringify(obj: any): string {
+  if (typeof obj === 'bigint') {
+    throw new TypeError('BigInt is not supported in canonical JSON serialization.');
+  }
   if (obj === undefined || typeof obj === 'function' || typeof obj === 'symbol') {
     return 'null';
   }
@@ -99,6 +102,78 @@ export class OboldEngine extends EventEmitter {
     const aad = `plan:${sw.id}:v${sw.version ?? 1}`;
     const encryptedPlan = this.cipher.encryptToString(planSnapshot, aad);
     return { planHash, encryptedPlan };
+  }
+
+  private buildExecutionContract(
+    sw: SwitchConfig,
+    stageId: string,
+    actionId: string,
+    pluginName: string,
+    config: Record<string, any>,
+    destructive: boolean,
+    privileged: boolean,
+    deadlineAt: number,
+    customIdempotencyKey?: string
+  ): { contract: ExecutionContract; contractMeta: any } {
+    const plugin = this.plugins.get(pluginName);
+    const switchVersion = sw.version ?? 1;
+    const planHash = OboldEngine.computePlanHash(sw);
+    const pluginVersion = plugin ? plugin.version : '1.0.0';
+    const pluginDigest = this.plugins.getPluginDigest(pluginName);
+    const idempotencyKey = customIdempotencyKey || `idemp-${sw.id}-${stageId}-${actionId}-${randomUUID()}`;
+    const configHash = createHash('sha256').update(canonicalJsonStringify(config || {})).digest('hex');
+    const payloadHash = createHash('sha256').update(canonicalJsonStringify({
+      switchId: sw.id,
+      stageId,
+      actionId,
+      config,
+    })).digest('hex');
+    const contractVersion = 1;
+    const contractBody = {
+      switchId: sw.id,
+      switchVersion,
+      planHash,
+      stageId,
+      actionId,
+      plugin: pluginName,
+      pluginVersion,
+      pluginDigest,
+      configHash,
+      payloadHash,
+      appVersion: DAEMON_VERSION,
+      idempotencyKey,
+      destructive,
+      privileged,
+      deadlineAt,
+      replaySafety: plugin?.replaySafety || 'UNKNOWN',
+      contractVersion,
+    };
+    const contractHash = createHash('sha256').update(canonicalJsonStringify(contractBody)).digest('hex');
+
+    const contract: ExecutionContract = {
+      ...contractBody,
+      contractHash,
+      configSnapshot: config,
+      createdAt: Date.now(),
+    };
+
+    const contractMeta = {
+      destructive,
+      privileged,
+      pluginVersion,
+      pluginDigest,
+      configHash,
+      payloadHash,
+      deadlineAt,
+      replaySafety: plugin?.replaySafety || 'UNKNOWN',
+      switchVersion,
+      planHash,
+      appVersion: DAEMON_VERSION,
+      contractVersion,
+      contractHash,
+    };
+
+    return { contract, contractMeta };
   }
 
   private syncSwitchesWithDb(): void {
@@ -265,6 +340,14 @@ export class OboldEngine extends EventEmitter {
           );
           continue;
         }
+      } else if (entry.replaySafety === 'FORBIDDEN' || (isDestructive && entry.replaySafety !== 'SAFE' && entry.replaySafety !== 'IDEMPOTENT')) {
+        this.ledger.markFailed(
+          entry.id,
+          'Crash recovery paused: action replay safety is FORBIDDEN or destructive non-idempotent. Manual reconciliation required.',
+          'UNKNOWN',
+          null
+        );
+        continue;
       }
 
       const plugin = this.plugins.get(entry.plugin);
@@ -297,10 +380,31 @@ export class OboldEngine extends EventEmitter {
       }
 
       const payload = this.ledger.getDecryptedPayload(entry);
+      const canonicalPayload = canonicalJsonStringify(payload);
+      const computedPayloadHash = createHash('sha256').update(canonicalPayload).digest('hex');
+      const contextPayloadHash = createHash('sha256').update(canonicalJsonStringify({
+        switchId: entry.switchId,
+        stageId: entry.stageId,
+        actionId: entry.actionId,
+        config: payload,
+      })).digest('hex');
+
+      const matchesPayload = !entry.payloadHash || computedPayloadHash === entry.payloadHash || contextPayloadHash === entry.payloadHash;
+      const matchesConfig = !entry.configHash || computedPayloadHash === entry.configHash;
+      if (!matchesPayload || !matchesConfig) {
+        this.ledger.markFailed(
+          entry.id,
+          `Crash recovery paused: payload or config hash mismatch. Tampering or corruption detected.`,
+          'UNKNOWN',
+          null
+        );
+        continue;
+      }
+
       this.ledger.claimEntry(entry.id);
       this.ledger.markExecuting(entry.id);
 
-      const originalDeadline = entry.deadlineAt || (sw ? (this.db.getSwitch(sw.id)?.next_deadline_at || (entry.createdAt + sw.intervalMs)) : entry.createdAt);
+      const originalDeadline = entry.deadlineAt ?? (sw ? (this.db.getSwitch(sw.id)?.next_deadline_at ?? (entry.createdAt + sw.intervalMs)) : entry.createdAt);
 
       try {
         const result = await plugin.execute(payload, {
@@ -310,6 +414,7 @@ export class OboldEngine extends EventEmitter {
           actionId: entry.actionId,
           idempotencyKey: entry.idempotencyKey || entry.id,
           deadlineAt: originalDeadline,
+          capabilities: plugin.capabilities,
         });
 
         if (result.success) {
@@ -507,14 +612,17 @@ export class OboldEngine extends EventEmitter {
           continue;
         }
 
-        const entry = this.ledger.createEntry(sw.id, 'reminder', rem.id, rem.plugin, rem.config, 10, undefined, {
-          destructive: false,
-          privileged: false,
-          pluginVersion: plugin.version,
-          pluginDigest: this.plugins.getPluginDigest(rem.plugin),
-          deadlineAt: nextDeadline,
-          replaySafety: 'SAFE',
-        });
+        const { contract, contractMeta } = this.buildExecutionContract(
+          sw,
+          'reminder',
+          rem.id,
+          rem.plugin,
+          rem.config,
+          false,
+          false,
+          nextDeadline
+        );
+        const entry = this.ledger.createEntry(sw.id, 'reminder', rem.id, rem.plugin, rem.config, 10, contract.idempotencyKey, contractMeta);
         this.ledger.claimEntry(entry.id);
         this.ledger.markExecuting(entry.id);
         this.db.setMetadata(cycleKey, 'IN_FLIGHT');
@@ -529,6 +637,7 @@ export class OboldEngine extends EventEmitter {
                 actionId: rem.id,
                 idempotencyKey: entry.idempotencyKey || entry.id,
                 deadlineAt: nextDeadline,
+                capabilities: plugin.capabilities,
                 signal,
               }),
             15000,
@@ -704,48 +813,19 @@ export class OboldEngine extends EventEmitter {
         ? `idemp-${sw.id}-${stage.id}-${action.id}-replay-${Date.now()}`
         : `idemp-${sw.id}-${stage.id}-${action.id}-${randomUUID()}`;
 
+      const { contract, contractMeta } = this.buildExecutionContract(
+        sw,
+        stage.id,
+        action.id,
+        action.plugin,
+        action.config,
+        action.destructive === true,
+        action.privileged === true,
+        deadlineTimestamp,
+        idempotencyKey
+      );
+
       const plugin = this.plugins.get(action.plugin);
-      const switchVersion = sw.version ?? 1;
-      const pluginVersion = plugin ? plugin.version : '1.0.0';
-      const pluginDigest = this.plugins.getPluginDigest(action.plugin);
-
-      const configHash = createHash('sha256').update(canonicalJsonStringify(action.config || {})).digest('hex');
-      const payloadHash = createHash('sha256').update(canonicalJsonStringify({
-        switchId: sw.id,
-        stageId: stage.id,
-        actionId: action.id,
-        config: action.config,
-      })).digest('hex');
-
-      const contract: ExecutionContract = {
-        switchId: sw.id,
-        switchVersion,
-        stageId: stage.id,
-        actionId: action.id,
-        plugin: action.plugin,
-        pluginVersion,
-        pluginDigest,
-        configSnapshot: action.config,
-        configHash,
-        payloadHash,
-        appVersion: DAEMON_VERSION,
-        idempotencyKey,
-        destructive: action.destructive === true,
-        privileged: action.privileged === true,
-        createdAt: Date.now(),
-        deadlineAt: deadlineTimestamp,
-      };
-
-      const contractMeta = {
-        destructive: contract.destructive,
-        privileged: contract.privileged,
-        pluginVersion: contract.pluginVersion,
-        pluginDigest: contract.pluginDigest,
-        configHash: contract.configHash,
-        payloadHash: contract.payloadHash,
-        deadlineAt: contract.deadlineAt,
-        replaySafety: (contract.destructive ? 'FORBIDDEN' : 'SAFE') as any,
-      };
 
       if (!plugin) {
         const entry = this.ledger.createEntry(sw.id, stage.id, action.id, action.plugin, contract.configSnapshot, 10, contract.idempotencyKey, contractMeta);
@@ -779,6 +859,7 @@ export class OboldEngine extends EventEmitter {
               destructive: contract.destructive,
               privileged: contract.privileged,
               dryRun,
+              capabilities: plugin.capabilities,
               signal,
             }),
           timeoutMs,
@@ -929,29 +1010,19 @@ export class OboldEngine extends EventEmitter {
       if (sw.duress && sw.duress.enabled && sw.duress.actions) {
         for (const act of sw.duress.actions) {
           const idempotencyKey = `idemp-duress-${sw.id}-${act.id}-${randomUUID()}`;
-          const contract: ExecutionContract = {
-            switchId: sw.id,
-            switchVersion: 1,
-            stageId: 'duress',
-            actionId: act.id,
-            plugin: act.plugin,
-            pluginVersion: '1.0.0',
-            configSnapshot: act.config,
-            idempotencyKey,
-            destructive: false,
-            privileged: false,
-            createdAt: now,
-            deadlineAt: nextDeadlineAt,
-          };
+          const { contract, contractMeta } = this.buildExecutionContract(
+            sw,
+            'duress',
+            act.id,
+            act.plugin,
+            act.config,
+            false,
+            false,
+            nextDeadlineAt,
+            idempotencyKey
+          );
 
-          const entry = this.ledger.createEntry(sw.id, 'duress', act.id, act.plugin, act.config, 10, idempotencyKey, {
-            destructive: false,
-            privileged: false,
-            pluginVersion: '1.0.0',
-            pluginDigest: this.plugins.getPluginDigest(act.plugin),
-            deadlineAt: nextDeadlineAt,
-            replaySafety: 'SAFE',
-          });
+          const entry = this.ledger.createEntry(sw.id, 'duress', act.id, act.plugin, act.config, 10, idempotencyKey, contractMeta);
           this.ledger.claimEntry(entry.id);
           this.ledger.markExecuting(entry.id);
 
@@ -979,6 +1050,7 @@ export class OboldEngine extends EventEmitter {
                   idempotencyKey,
                   deadlineAt: nextDeadlineAt,
                   isDuress: true,
+                  capabilities: plugin.capabilities,
                   signal,
                 }),
               15000,
@@ -1076,50 +1148,23 @@ export class OboldEngine extends EventEmitter {
       if (sw.duress && sw.duress.enabled && sw.duress.actions) {
         for (const act of sw.duress.actions) {
           const idempotencyKey = `idemp-duress-${sw.id}-${act.id}-${randomUUID()}`;
-          const plugin = this.plugins.get(act.plugin);
-          const switchVersion = sw.version ?? 1;
-          const pluginVersion = plugin ? plugin.version : '1.0.0';
-          const pluginDigest = this.plugins.getPluginDigest(act.plugin);
-          const configHash = createHash('sha256').update(canonicalJsonStringify(act.config || {})).digest('hex');
-          const payloadHash = createHash('sha256').update(canonicalJsonStringify({
-            switchId: sw.id,
-            stageId: 'duress',
-            actionId: act.id,
-            config: act.config,
-          })).digest('hex');
+          const { contract, contractMeta } = this.buildExecutionContract(
+            sw,
+            'duress',
+            act.id,
+            act.plugin,
+            act.config,
+            false,
+            false,
+            result.nextDeadlineAt,
+            idempotencyKey
+          );
 
-          const contract: ExecutionContract = {
-            switchId: sw.id,
-            switchVersion,
-            stageId: 'duress',
-            actionId: act.id,
-            plugin: act.plugin,
-            pluginVersion,
-            pluginDigest,
-            configSnapshot: act.config,
-            configHash,
-            payloadHash,
-            appVersion: DAEMON_VERSION,
-            idempotencyKey,
-            destructive: false,
-            privileged: false,
-            createdAt: Date.now(),
-            deadlineAt: result.nextDeadlineAt,
-          };
-
-          const entry = this.ledger.createEntry(sw.id, 'duress', act.id, act.plugin, act.config, 10, idempotencyKey, {
-            destructive: false,
-            privileged: false,
-            pluginVersion,
-            pluginDigest,
-            configHash,
-            payloadHash,
-            deadlineAt: result.nextDeadlineAt,
-            replaySafety: 'SAFE',
-          });
+          const entry = this.ledger.createEntry(sw.id, 'duress', act.id, act.plugin, act.config, 10, idempotencyKey, contractMeta);
           this.ledger.claimEntry(entry.id);
           this.ledger.markExecuting(entry.id);
 
+          const plugin = this.plugins.get(act.plugin);
           if (!plugin) {
             this.ledger.markBlockedMissingPlugin(entry.id, act.plugin);
             continue;
@@ -1136,6 +1181,7 @@ export class OboldEngine extends EventEmitter {
                   idempotencyKey,
                   deadlineAt: result.nextDeadlineAt,
                   isDuress: true,
+                  capabilities: plugin.capabilities,
                   signal,
                 }),
               15000,

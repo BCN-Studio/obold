@@ -51,7 +51,12 @@ CREATE TABLE IF NOT EXISTS execution_ledger (
   config_hash TEXT DEFAULT NULL,
   payload_hash TEXT DEFAULT NULL,
   deadline_at INTEGER DEFAULT NULL,
-  replay_safety TEXT NOT NULL DEFAULT 'UNKNOWN'
+  replay_safety TEXT NOT NULL DEFAULT 'UNKNOWN',
+  switch_version INTEGER DEFAULT 1,
+  plan_hash TEXT DEFAULT NULL,
+  app_version TEXT DEFAULT NULL,
+  contract_version INTEGER DEFAULT 1,
+  contract_hash TEXT DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (
